@@ -314,10 +314,26 @@ class Retriever:
     def _context_overlaps(
         self, edge_context: Optional[dict], retrieval_context: Optional[dict]
     ) -> bool:
-        """Check if edge context features overlap with retrieval context."""
+        """Check if edge context features overlap with retrieval context.
+
+        For modulatory edges created by ModulatoryDiscoveryJob, edge_context
+        contains 'matched_features' — a dict of structural feature categories
+        that matched (e.g. {"action_type": "migration", "dynamic": "transition"}).
+        The retrieval context can include 'features' with the cue's structural
+        features. If any feature category+value matches, the gate opens.
+        """
         if not edge_context or not retrieval_context:
             return False
-        # Simple key overlap check
+
+        # Check matched_features against retrieval context features
+        matched = edge_context.get("matched_features")
+        ctx_features = retrieval_context.get("features")
+        if matched and ctx_features:
+            for key, value in matched.items():
+                if ctx_features.get(key) == value:
+                    return True
+
+        # Fallback: simple key overlap check
         edge_keys = set(edge_context.keys())
         ctx_keys = set(retrieval_context.keys())
         return bool(edge_keys & ctx_keys)

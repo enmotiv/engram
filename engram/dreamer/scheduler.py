@@ -8,12 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from engram.config import settings
 from engram.dreamer.consolidation import ConsolidationJob
 from engram.dreamer.decay import EdgeDecayJob
+from engram.dreamer.modulatory import ModulatoryDiscoveryJob
 from engram.dreamer.prune import EdgePruneJob
 from engram.plugins.registry import PluginRegistry
 
 _decay_job = EdgeDecayJob()
 _prune_job = EdgePruneJob()
 _consolidation_job = ConsolidationJob()
+_modulatory_job = ModulatoryDiscoveryJob()
 
 
 async def startup(ctx):
@@ -73,12 +75,26 @@ async def run_consolidation(ctx):
         await db.commit()
 
 
+async def run_modulatory(ctx):
+    """Run modulatory edge discovery on all namespaces."""
+    async with ctx["session_factory"]() as db:
+        from sqlalchemy import distinct, select
+        from engram.db.models import Memory
+        result = await db.execute(select(distinct(Memory.namespace)))
+        namespaces = [r[0] for r in result.fetchall()]
+
+        for ns in namespaces:
+            await _modulatory_job.execute(ns, db=db)
+        await db.commit()
+
+
 class WorkerSettings:
-    functions = [run_decay, run_prune, run_consolidation]
+    functions = [run_decay, run_prune, run_consolidation, run_modulatory]
     cron_jobs = [
         cron(run_decay, hour=3, minute=0),        # Daily at 3:00 UTC
         cron(run_prune, hour=3, minute=30),        # Daily at 3:30 UTC
         cron(run_consolidation, minute=45),         # Hourly at :45
+        cron(run_modulatory, weekday=0, hour=4),    # Weekly: Monday 4:00 UTC
     ]
     on_startup = startup
     on_shutdown = shutdown
