@@ -60,3 +60,22 @@ class RetrievalPostProcessor(ABC):
     @abstractmethod
     async def process(self, results):
         ...
+
+
+class GraphGenerator(ABC):
+    """Generates graph snapshots from memories and edges."""
+
+    @abstractmethod
+    async def generate(
+        self, namespace: str, memories: List, edges: List
+    ) -> dict:
+        """Generate a graph snapshot.
+
+        Returns dict with keys:
+            content: str (mermaid syntax)
+            node_count: int
+            cluster_count: int
+            memory_count: int
+            metadata: dict
+        """
+        ...

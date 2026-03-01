@@ -40,12 +40,14 @@ def create_app() -> FastAPI:
     )
 
     from engram.api.edges import router as edges_router
+    from engram.api.graphs import router as graphs_router
     from engram.api.health import router as health_router
     from engram.api.memories import router as memories_router
     from engram.api.namespaces import router as namespaces_router
 
     app.include_router(memories_router, prefix="/v1")
     app.include_router(edges_router, prefix="/v1")
+    app.include_router(graphs_router, prefix="/v1")
     app.include_router(namespaces_router, prefix="/v1")
     app.include_router(health_router, prefix="/v1")
 

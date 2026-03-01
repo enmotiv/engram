@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from engram.config import settings
 from engram.dreamer.consolidation import ConsolidationJob
 from engram.dreamer.decay import EdgeDecayJob
+from engram.dreamer.graph_generation import GraphGenerationJob
 from engram.dreamer.modulatory import ModulatoryDiscoveryJob
 from engram.dreamer.prune import EdgePruneJob
 from engram.plugins.registry import PluginRegistry
@@ -20,6 +21,7 @@ _decay_job = EdgeDecayJob()
 _prune_job = EdgePruneJob()
 _consolidation_job = ConsolidationJob()
 _modulatory_job = ModulatoryDiscoveryJob()
+_graph_job = GraphGenerationJob()
 
 
 async def startup(ctx):
@@ -80,6 +82,27 @@ async def run_modulatory(ctx):
         await db.commit()
 
 
+async def run_graph_generation(ctx):
+    """Run graph generation on all namespaces that have enough new memories."""
+    registry: PluginRegistry = ctx["registry"]
+    # Use plugin-registered generator if available, otherwise default
+    generator = registry.graph_generator
+    if generator:
+        job = GraphGenerationJob(generator)
+    else:
+        job = _graph_job
+
+    async with ctx["session_factory"]() as db:
+        for ns in await _get_namespaces(db):
+            try:
+                if await job.should_run(ns, db=db):
+                    result = await job.execute(ns, db=db)
+                    logger.info("Graph generation on %s: %s", ns, result)
+            except Exception:
+                logger.warning("Graph generation failed on %s", ns, exc_info=True)
+        await db.commit()
+
+
 async def run_plugin_jobs(ctx):
     """Run all plugin-registered WorkerJobs on each namespace."""
     registry: PluginRegistry = ctx["registry"]
@@ -101,12 +124,13 @@ async def run_plugin_jobs(ctx):
 
 
 class WorkerSettings:
-    functions = [run_decay, run_prune, run_consolidation, run_modulatory, run_plugin_jobs]
+    functions = [run_decay, run_prune, run_consolidation, run_modulatory, run_graph_generation, run_plugin_jobs]
     cron_jobs = [
         cron(run_decay, hour=3, minute=0),        # Daily at 3:00 UTC
         cron(run_prune, hour=3, minute=30),        # Daily at 3:30 UTC
         cron(run_consolidation, minute=45),         # Hourly at :45
         cron(run_modulatory, weekday=0, hour=4),    # Weekly: Monday 4:00 UTC
+        cron(run_graph_generation, hour={1, 7, 13, 19}),  # Every 6 hours
         cron(run_plugin_jobs, hour={2, 8, 14, 20}),  # Every 6 hours
     ]
     on_startup = startup

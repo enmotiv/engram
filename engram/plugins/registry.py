@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 from engram.engine.interfaces import (
     DimensionSet,
     Encoder,
+    GraphGenerator,
     RetrievalPostProcessor,
     TraceEnricher,
     WorkerJob,
@@ -84,6 +85,7 @@ class PluginRegistry:
         self.jobs: List[WorkerJob] = []
         self.trace_enricher: Optional[TraceEnricher] = None
         self.post_processor: Optional[RetrievalPostProcessor] = None
+        self._graph_generator: Optional[GraphGenerator] = None
 
     @classmethod
     def get_instance(cls) -> PluginRegistry:
@@ -151,6 +153,16 @@ class PluginRegistry:
 
     def get_trace_enricher(self) -> Optional[TraceEnricher]:
         return self.trace_enricher
+
+    # -- Graph generator ------------------------------------------------------
+
+    def register_graph_generator(self, generator: GraphGenerator) -> None:
+        """Register a custom graph generator. Overrides the default OSS generator."""
+        self._graph_generator = generator
+
+    @property
+    def graph_generator(self) -> Optional[GraphGenerator]:
+        return self._graph_generator
 
     # -- Plugin loading -------------------------------------------------------
 

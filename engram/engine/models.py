@@ -29,3 +29,34 @@ class RetrievalResult(BaseModel):
     suppressed: List[dict] = Field(default_factory=list)
     trace: Optional[str] = None
     retrieval_ms: float = 0.0
+
+
+class MemoryHeaderResult(BaseModel):
+    """Layer 0 header — metadata only, no content."""
+
+    id: str
+    memory_type: str = "episodic"
+    activation: float = 0.0
+    convergence_score: float = 0.0
+    retrieval_path: str = "direct"
+    dimensions_matched: List[str] = Field(default_factory=list)
+    enrichment_status: str = "raw"
+    vad_summary: Optional[Dict[str, float]] = None
+    topic_tags: List[str] = Field(default_factory=list)
+    entity_ids: List[str] = Field(default_factory=list)
+    dimension_confidence: Dict[str, float] = Field(default_factory=dict)
+    salience: float = 0.5
+    created_at: Optional[str] = None
+    last_accessed: Optional[str] = None
+    access_count: int = 0
+
+
+class HeaderSearchResult(BaseModel):
+    """Result of a header-only search (Layer 0)."""
+
+    triggered: bool
+    urgency: float
+    headers: List[MemoryHeaderResult] = Field(default_factory=list)
+    suppressed: List[dict] = Field(default_factory=list)
+    retrieval_ms: float = 0.0
+    graph_content: Optional[str] = None  # mermaid from latest graph snapshot

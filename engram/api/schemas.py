@@ -51,6 +51,82 @@ class RetrieveRequest(BaseModel):
     hop_depth: int = 2
 
 
+# --- Header search / resolve / batch-enrich schemas ---
+
+class HeaderSearchRequest(BaseModel):
+    namespace: str
+    cue: str
+    context: Optional[dict] = None
+    max_results: int = 50
+    urgency_threshold: float = 0.3
+
+
+class MemoryHeader(BaseModel):
+    id: str
+    memory_type: str = "episodic"
+    activation: float = 0.0
+    convergence_score: float = 0.0
+    retrieval_path: str = "direct"
+    dimensions_matched: List[str] = Field(default_factory=list)
+    enrichment_status: str = "raw"
+    vad_summary: Optional[Dict[str, float]] = None
+    topic_tags: List[str] = Field(default_factory=list)
+    entity_ids: List[str] = Field(default_factory=list)
+    dimension_confidence: Dict[str, float] = Field(default_factory=dict)
+    salience: float = 0.5
+    created_at: Optional[str] = None
+    last_accessed: Optional[str] = None
+    access_count: int = 0
+
+
+class HeaderSearchResponse(BaseModel):
+    triggered: bool
+    urgency: float
+    headers: List[MemoryHeader] = Field(default_factory=list)
+    suppressed: List[dict] = Field(default_factory=list)
+    retrieval_ms: float = 0.0
+
+
+class ResolveRequest(BaseModel):
+    memory_ids: List[str]
+    include_edges: bool = True
+
+
+class ResolvedMemory(BaseModel):
+    id: str
+    namespace: str
+    content: str
+    memory_type: str
+    dimension_scores: Dict[str, float] = Field(default_factory=dict)
+    features: Optional[Dict] = Field(default_factory=dict)
+    activation: float = 0.0
+    salience: float = 0.5
+    access_count: int = 0
+    created_at: Optional[str] = None
+    last_accessed: Optional[str] = None
+    edges: List[dict] = Field(default_factory=list)
+
+
+class ResolveResponse(BaseModel):
+    memories: List[ResolvedMemory] = Field(default_factory=list)
+    not_found: List[str] = Field(default_factory=list)
+
+
+class BatchEnrichItem(BaseModel):
+    memory_id: str
+    metadata: Optional[Dict] = None
+    features: Optional[Dict] = None
+
+
+class BatchEnrichRequest(BaseModel):
+    updates: List[BatchEnrichItem]
+
+
+class BatchEnrichResponse(BaseModel):
+    updated: List[str] = Field(default_factory=list)
+    failed: List[str] = Field(default_factory=list)
+
+
 # --- Edge schemas ---
 
 class CreateEdgeRequest(BaseModel):

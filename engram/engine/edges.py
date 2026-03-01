@@ -108,6 +108,25 @@ class EdgeStore:
 
         return {"nodes": [str(n) for n in node_ids], "edges": edges}
 
+    async def get_edges_batch(
+        self,
+        memory_ids: List[uuid.UUID],
+        direction: str = "both",
+    ) -> List[Edge]:
+        """Fetch edges for multiple memories in a single query."""
+        if not memory_ids:
+            return []
+        if direction == "outgoing":
+            stmt = select(Edge).where(Edge.source_memory_id.in_(memory_ids))
+        elif direction == "incoming":
+            stmt = select(Edge).where(Edge.target_memory_id.in_(memory_ids))
+        else:  # both
+            stmt = select(Edge).where(
+                (Edge.source_memory_id.in_(memory_ids)) | (Edge.target_memory_id.in_(memory_ids))
+            )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
     async def batch_create(self, edges: List[Dict]) -> List[Edge]:
         results = []
         for e in edges:

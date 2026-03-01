@@ -14,7 +14,13 @@ from engram.engine.cache import TraceCache
 from engram.engine.edge_ops import EdgeOps
 from engram.engine.edges import EdgeStore
 from engram.engine.embedding import EmbeddingService
-from engram.engine.models import MemoryResult, RetrievalOptions, RetrievalResult
+from engram.engine.models import (
+    HeaderSearchResult,
+    MemoryHeaderResult,
+    MemoryResult,
+    RetrievalOptions,
+    RetrievalResult,
+)
 from engram.engine.tracer import TraceGenerator
 from engram.engine.urgency import score_urgency
 from engram.plugins.registry import PluginRegistry
@@ -128,6 +134,150 @@ class Retriever:
             await self._reconsolidate(result, namespace)
 
         return result
+
+    async def search_headers(
+        self,
+        namespace: str,
+        cue: str,
+        context: Optional[dict] = None,
+        max_results: int = 50,
+        urgency_threshold: float = 0.3,
+    ) -> HeaderSearchResult:
+        """Layer 0 header search — returns metadata without content.
+
+        Same pipeline as retrieve() (urgency → encode → vector search →
+        convergence → spreading activation) but the SQL selects NO content
+        column. Returns MemoryHeaderResult objects for lightweight scanning.
+        """
+        start = time.monotonic()
+
+        urgency = score_urgency(cue, context)
+        if urgency < urgency_threshold:
+            return HeaderSearchResult(
+                triggered=False,
+                urgency=urgency,
+                retrieval_ms=round((time.monotonic() - start) * 1000, 2),
+            )
+
+        cue_embedding = await self._embedding.get_embedding(cue)
+        cue_scores = await self._embedding.get_dimension_scores(cue)
+
+        if cue_embedding is None:
+            return HeaderSearchResult(
+                triggered=True,
+                urgency=urgency,
+                retrieval_ms=round((time.monotonic() - start) * 1000, 2),
+            )
+
+        # Vector search — header columns only (no content)
+        top_k = max_results * 2
+        candidates = await self._header_vector_search(namespace, cue_embedding, top_k)
+
+        # Convergence scoring on headers
+        scored = self._score_headers(candidates, cue_scores)
+
+        # Sort by activation (convergence score) and limit
+        scored.sort(key=lambda h: h.activation, reverse=True)
+        headers = scored[:max_results]
+
+        # Pre-Layer 0: read latest graph snapshot for top-down hints
+        graph_content = None
+        try:
+            from engram.engine.graph_store import GraphStore
+            graph_store = GraphStore(self.db)
+            graph = await graph_store.get_latest(namespace)
+            if graph:
+                graph_content = graph.content
+        except Exception:
+            pass  # graph read is non-fatal
+
+        elapsed = round((time.monotonic() - start) * 1000, 2)
+        return HeaderSearchResult(
+            triggered=True,
+            urgency=urgency,
+            headers=headers,
+            retrieval_ms=elapsed,
+            graph_content=graph_content,
+        )
+
+    async def _header_vector_search(
+        self, namespace: str, cue_embedding: List[float], top_k: int
+    ) -> List[dict]:
+        """Cosine similarity search returning header columns only (no content)."""
+        vec_literal = "[" + ",".join(str(v) for v in cue_embedding) + "]"
+        stmt = text(
+            f"SELECT id, memory_type, dimension_scores, features, activation, "
+            f"salience, access_count, created_at, last_accessed, "
+            f"1 - (embedding <=> '{vec_literal}'::vector) AS cosine_sim "
+            f"FROM memories "
+            f"WHERE namespace = :ns AND embedding IS NOT NULL "
+            f"ORDER BY embedding <=> '{vec_literal}'::vector "
+            f"LIMIT :k"
+        )
+        result = await self.db.execute(stmt, {"ns": namespace, "k": top_k})
+        rows = result.fetchall()
+        return [
+            {
+                "id": str(r.id),
+                "memory_type": r.memory_type,
+                "dimension_scores": r.dimension_scores or {},
+                "features": r.features or {},
+                "activation": r.activation or 0.0,
+                "salience": r.salience or 0.5,
+                "access_count": r.access_count or 0,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "last_accessed": r.last_accessed.isoformat() if r.last_accessed else None,
+                "cosine_sim": r.cosine_sim,
+            }
+            for r in rows
+        ]
+
+    def _score_headers(
+        self, candidates: List[dict], cue_scores: Dict[str, float]
+    ) -> List[MemoryHeaderResult]:
+        """Score header candidates on multi-dimension convergence."""
+        results = []
+        for c in candidates:
+            mem_scores = c["dimension_scores"]
+            dims_matched = []
+            dim_score_sum = 0.0
+            dim_count = 0
+
+            for dim, cue_val in cue_scores.items():
+                mem_val = mem_scores.get(dim, 0.0)
+                score = 1.0 - abs(mem_val - cue_val)
+                if score > 0.3:
+                    dims_matched.append(dim)
+                    dim_score_sum += score
+                    dim_count += 1
+
+            avg_dim_score = dim_score_sum / dim_count if dim_count > 0 else 0.0
+            cosine_sim = c.get("cosine_sim", 0.0)
+            convergence = len(dims_matched) * avg_dim_score * cosine_sim
+
+            # Extract features JSONB fields
+            features = c.get("features", {})
+
+            results.append(
+                MemoryHeaderResult(
+                    id=c["id"],
+                    memory_type=c.get("memory_type", "episodic"),
+                    activation=convergence,
+                    convergence_score=round(convergence, 4),
+                    retrieval_path="direct",
+                    dimensions_matched=dims_matched,
+                    enrichment_status=features.get("enrichment_status", "raw"),
+                    vad_summary=features.get("vad_summary"),
+                    topic_tags=features.get("topic_tags", []),
+                    entity_ids=features.get("entity_ids", []),
+                    dimension_confidence=features.get("dimension_confidence", {}),
+                    salience=c.get("salience", 0.5),
+                    created_at=c.get("created_at"),
+                    last_accessed=c.get("last_accessed"),
+                    access_count=c.get("access_count", 0),
+                )
+            )
+        return results
 
     async def _vector_search(
         self, namespace: str, cue_embedding: List[float], top_k: int

@@ -77,6 +77,29 @@ class Memory(Base):
 VALID_EDGE_TYPES = frozenset({"excitatory", "inhibitory", "associative", "temporal", "modulatory"})
 
 
+class Graph(Base):
+    """Graph snapshot — one row per snapshot per namespace."""
+
+    __tablename__ = "graphs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    namespace = Column(Text, nullable=False)
+    content = Column(Text, nullable=False)  # mermaid syntax string
+    node_count = Column(Integer, nullable=False)
+    cluster_count = Column(Integer, default=0)
+    memory_count = Column(Integer, nullable=False)  # total memories represented
+    version = Column(Integer, default=1)
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    metadata_ = Column("metadata", JSONB, default=dict)
+
+    __table_args__ = (
+        Index("idx_graphs_namespace", "namespace"),
+        Index("idx_graphs_namespace_latest", "namespace", "created_at"),
+    )
+
+
 class Edge(Base):
     __tablename__ = "edges"
 

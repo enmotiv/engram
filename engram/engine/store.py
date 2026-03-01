@@ -95,6 +95,14 @@ class MemoryStore:
         await self.db.flush()
         return True
 
+    async def get_batch(self, memory_ids: List[uuid.UUID]) -> List[Memory]:
+        """Fetch multiple memories by ID in a single query."""
+        if not memory_ids:
+            return []
+        stmt = select(Memory).where(Memory.id.in_(memory_ids))
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
     async def batch_create(self, memories: List[Dict]) -> List[Memory]:
         results = []
         for item in memories:
