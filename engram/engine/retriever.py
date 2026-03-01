@@ -1,4 +1,4 @@
-"""Multi-axis retrieval with convergence scoring."""
+"""Multi-axis retrieval with convergence scoring and spreading activation."""
 
 from __future__ import annotations
 
@@ -9,11 +9,23 @@ from typing import Dict, List, Optional
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from engram.db.models import Memory
+from engram.db.models import Edge, Memory
+from engram.engine.edge_ops import EdgeOps
+from engram.engine.edges import EdgeStore
 from engram.engine.embedding import EmbeddingService
 from engram.engine.models import MemoryResult, RetrievalOptions, RetrievalResult
 from engram.engine.urgency import score_urgency
 from engram.plugins.registry import PluginRegistry
+
+
+# Edge-type propagation multipliers
+_EDGE_MULTIPLIERS = {
+    "excitatory": 1.0,
+    "inhibitory": -1.0,
+    "associative": 0.5,
+    "temporal": 0.5,
+    "modulatory": 0.3,
+}
 
 
 class Retriever:
@@ -27,6 +39,8 @@ class Retriever:
         self.db = db
         self._registry = registry or PluginRegistry.get_instance()
         self._embedding = EmbeddingService(self._registry)
+        self._edge_store = EdgeStore(db)
+        self._edge_ops = EdgeOps(db)
 
     async def retrieve(
         self,
@@ -65,18 +79,30 @@ class Retriever:
         # Step 3: Convergence scoring
         scored = self._convergence_score(candidates, cue_scores)
 
-        # Step 4: Sort and limit
-        scored.sort(key=lambda m: m.convergence_score, reverse=True)
-        results = scored[: opts.max_results]
+        # Step 4: Spreading activation through typed edges
+        activated, suppressed = await self._spread_activation(
+            scored, namespace, opts.hop_depth, context
+        )
+
+        # Step 5: Sort by activation and limit
+        activated.sort(key=lambda m: m.activation, reverse=True)
+        results = activated[: opts.max_results]
 
         elapsed = round((time.monotonic() - start) * 1000, 2)
 
-        return RetrievalResult(
+        result = RetrievalResult(
             triggered=True,
             urgency=urgency,
             memories=results,
+            suppressed=suppressed,
             retrieval_ms=elapsed,
         )
+
+        # Reconsolidation (Hebbian learning)
+        if results and opts.reconsolidate:
+            await self._reconsolidate(result, namespace)
+
+        return result
 
     async def _vector_search(
         self, namespace: str, cue_embedding: List[float], top_k: int
@@ -138,10 +164,139 @@ class Retriever:
                 MemoryResult(
                     id=c["id"],
                     content=c["content"],
-                    activation=c["activation"],
+                    activation=convergence,  # seed activation = convergence score
                     dimensions_matched=dims_matched,
                     convergence_score=round(convergence, 4),
                     retrieval_path="direct",
                 )
             )
         return results
+
+    async def _spread_activation(
+        self,
+        seeds: List[MemoryResult],
+        namespace: str,
+        hop_depth: int,
+        context: Optional[dict] = None,
+    ) -> tuple[List[MemoryResult], List[dict]]:
+        """Spread activation through typed edges from seed memories.
+
+        Returns (activated_memories, suppressed_memories).
+        """
+        if not seeds:
+            return [], []
+
+        # Map memory_id → MemoryResult for all active nodes
+        active: Dict[str, MemoryResult] = {m.id: m for m in seeds}
+        suppressed: List[dict] = []
+
+        # Track which nodes are direct results vs discovered via spreading
+        direct_ids = {m.id for m in seeds}
+
+        for _hop in range(hop_depth):
+            current_ids = [uuid.UUID(mid) for mid in active.keys()]
+
+            # Get all outgoing edges from current active nodes
+            all_edges: List[Edge] = []
+            for mid in current_ids:
+                edges = await self._edge_store.get_edges(mid, "outgoing")
+                all_edges.extend(edges)
+
+            if not all_edges:
+                break
+
+            # Collect neighbor IDs we need to fetch
+            neighbor_ids_to_fetch = set()
+            for edge in all_edges:
+                tid = str(edge.target_memory_id)
+                if tid not in active:
+                    neighbor_ids_to_fetch.add(edge.target_memory_id)
+
+            # Batch-fetch neighbor memories
+            neighbor_map: Dict[str, Memory] = {}
+            if neighbor_ids_to_fetch:
+                stmt = select(Memory).where(
+                    Memory.id.in_(list(neighbor_ids_to_fetch)),
+                    Memory.namespace == namespace,
+                )
+                result = await self.db.execute(stmt)
+                for mem in result.scalars().all():
+                    neighbor_map[str(mem.id)] = mem
+
+            # Propagate activation
+            for edge in all_edges:
+                source_id = str(edge.source_memory_id)
+                target_id = str(edge.target_memory_id)
+
+                if source_id not in active:
+                    continue
+
+                source_activation = active[source_id].activation
+
+                # Modulatory edges only fire if context overlaps
+                if edge.edge_type == "modulatory":
+                    if not self._context_overlaps(edge.context_features, context):
+                        continue
+
+                multiplier = _EDGE_MULTIPLIERS.get(edge.edge_type, 0.5)
+                delta = source_activation * edge.weight * multiplier
+
+                if target_id in active:
+                    # Update existing node's activation
+                    active[target_id].activation += delta
+                else:
+                    # Discover new node via spreading
+                    mem = neighbor_map.get(target_id)
+                    if mem is None:
+                        continue
+                    active[target_id] = MemoryResult(
+                        id=target_id,
+                        content=mem.content,
+                        activation=delta,
+                        dimensions_matched=[],
+                        convergence_score=0.0,
+                        retrieval_path="spreading",
+                    )
+
+        # Filter: remove memories with activation <= 0 (inhibited out)
+        result_list = []
+        for mid, mem_result in active.items():
+            if mem_result.activation <= 0:
+                suppressed.append({
+                    "id": mid,
+                    "content": mem_result.content,
+                    "reason": "inhibited",
+                    "final_activation": round(mem_result.activation, 4),
+                })
+            else:
+                # Mark retrieval_path correctly
+                if mid not in direct_ids:
+                    mem_result.retrieval_path = "spreading"
+                result_list.append(mem_result)
+
+        return result_list, suppressed
+
+    def _context_overlaps(
+        self, edge_context: Optional[dict], retrieval_context: Optional[dict]
+    ) -> bool:
+        """Check if edge context features overlap with retrieval context."""
+        if not edge_context or not retrieval_context:
+            return False
+        # Simple key overlap check
+        edge_keys = set(edge_context.keys())
+        ctx_keys = set(retrieval_context.keys())
+        return bool(edge_keys & ctx_keys)
+
+    async def _reconsolidate(self, result: RetrievalResult, namespace: str) -> None:
+        """Hebbian learning: strengthen edges between co-retrieved memories."""
+        if len(result.memories) < 2:
+            return
+        try:
+            memory_ids = [uuid.UUID(m.id) for m in result.memories]
+            await self._edge_ops.reinforce_traversed(
+                seed_ids=memory_ids[:1],
+                included_ids=memory_ids[1:],
+                boost=1.1,
+            )
+        except Exception:
+            pass  # fire-and-forget — don't crash on reconsolidation failure

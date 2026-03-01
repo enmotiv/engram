@@ -10,6 +10,7 @@ class RetrievalOptions(BaseModel):
     urgency_threshold: float = 0.3
     hop_depth: int = 2
     trace_format: str = "graph"
+    reconsolidate: bool = True
 
 
 class MemoryResult(BaseModel):
