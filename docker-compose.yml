@@ -22,6 +22,11 @@ services:
       - "6380:6379"
     volumes:
       - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   engram-api:
     build: .
@@ -30,11 +35,28 @@ services:
     environment:
       ENGRAM_DATABASE_URL: postgresql+asyncpg://engram:engram@postgres:5432/engram
       ENGRAM_REDIS_URL: redis://redis:6379/0
+      ENGRAM_PLUGIN: engram.plugins.brain_regions
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
+    command: >
+      sh -c "python -c 'from engram.db.session import async_engine; from engram.db.models import Base; import asyncio; asyncio.run((lambda: Base.metadata.create_all(async_engine))())' 2>/dev/null;
+             uvicorn engram.api.app:app --host 0.0.0.0 --port 8100"
+
+  engram-dreamer:
+    build: .
+    environment:
+      ENGRAM_DATABASE_URL: postgresql+asyncpg://engram:engram@postgres:5432/engram
+      ENGRAM_REDIS_URL: redis://redis:6379/0
+      ENGRAM_PLUGIN: engram.plugins.brain_regions
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: arq engram.dreamer.scheduler.WorkerSettings
 
 volumes:
   pgdata:
