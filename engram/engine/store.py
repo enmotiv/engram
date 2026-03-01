@@ -27,11 +27,12 @@ class MemoryStore:
         content: str,
         memory_type: str = "episodic",
         metadata: Optional[Dict] = None,
+        memory_id: Optional[str] = None,
     ) -> Memory:
         embedding = await self._embedding.get_embedding(content)
         dimension_scores = await self._embedding.get_dimension_scores(content)
 
-        mem = Memory(
+        kwargs: Dict = dict(
             namespace=namespace,
             content=content,
             memory_type=memory_type,
@@ -39,6 +40,11 @@ class MemoryStore:
             dimension_scores=dimension_scores,
             features=metadata or {},
         )
+        if memory_id:
+            import uuid as _uuid
+            kwargs["id"] = _uuid.UUID(memory_id)
+
+        mem = Memory(**kwargs)
         self.db.add(mem)
         await self.db.flush()
         return mem
@@ -61,6 +67,25 @@ class MemoryStore:
         )
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
+
+    async def update(
+        self,
+        memory_id: uuid.UUID,
+        metadata: Optional[Dict] = None,
+        features: Optional[Dict] = None,
+    ) -> Optional[Memory]:
+        """Merge metadata and/or features into an existing memory's features column."""
+        mem = await self.db.get(Memory, memory_id)
+        if mem is None:
+            return None
+        existing = mem.features or {}
+        if metadata:
+            existing.update(metadata)
+        if features:
+            existing.update(features)
+        mem.features = existing
+        await self.db.flush()
+        return mem
 
     async def delete(self, memory_id: uuid.UUID) -> bool:
         mem = await self.db.get(Memory, memory_id)

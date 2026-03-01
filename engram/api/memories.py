@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import uuid
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from engram.api.deps import get_db, get_memory_store, get_retriever
@@ -13,6 +14,7 @@ from engram.api.schemas import (
     CreateMemoryRequest,
     MemoryResponse,
     RetrieveRequest,
+    UpdateMemoryRequest,
 )
 from engram.engine.models import RetrievalOptions
 from engram.engine.retriever import Retriever
@@ -28,6 +30,8 @@ def _memory_to_response(mem) -> MemoryResponse:
         content=mem.content,
         memory_type=mem.memory_type or "episodic",
         dimension_scores=mem.dimension_scores or {},
+        features=mem.features or {},
+        metadata=mem.features or {},  # features IS the metadata store in Engram
         activation=mem.activation or 0.0,
         salience=mem.salience or 0.5,
         access_count=mem.access_count or 0,
@@ -45,6 +49,8 @@ async def create_memory(
         namespace=req.namespace,
         content=req.content,
         memory_type=req.memory_type,
+        metadata=req.metadata,
+        memory_id=req.id,
     )
     await db.commit()
     return _memory_to_response(mem)
@@ -62,10 +68,39 @@ async def batch_create(
             namespace=m.namespace,
             content=m.content,
             memory_type=m.memory_type,
+            metadata=m.metadata,
+            memory_id=m.id,
         )
         results.append(_memory_to_response(mem))
     await db.commit()
-    return results
+    return {"created": results}
+
+
+@router.get("/memories")
+async def list_memories(
+    namespace: str,
+    memory_type: Optional[str] = None,
+    limit: int = 50,
+    store: MemoryStore = Depends(get_memory_store),
+):
+    """List/filter memories by namespace and optional metadata filters."""
+    from sqlalchemy import select
+    from engram.db.models import Memory
+
+    stmt = (
+        select(Memory)
+        .where(Memory.namespace == namespace)
+        .order_by(Memory.created_at.desc())
+        .limit(limit)
+    )
+    if memory_type:
+        # memory_type is stored inside features JSONB as enmotiv_type
+        stmt = stmt.where(
+            Memory.features["enmotiv_type"].astext == memory_type
+        )
+    result = await store.db.execute(stmt)
+    memories = list(result.scalars().all())
+    return {"memories": [_memory_to_response(m) for m in memories]}
 
 
 @router.post("/memories/retrieve")
@@ -95,6 +130,24 @@ async def get_memory(
     mem = await store.get(uuid.UUID(memory_id))
     if mem is None:
         raise HTTPException(status_code=404, detail="Memory not found")
+    return _memory_to_response(mem)
+
+
+@router.patch("/memories/{memory_id}", response_model=MemoryResponse)
+async def update_memory(
+    memory_id: str,
+    req: UpdateMemoryRequest,
+    store: MemoryStore = Depends(get_memory_store),
+    db: AsyncSession = Depends(get_db),
+):
+    mem = await store.update(
+        uuid.UUID(memory_id),
+        metadata=req.metadata,
+        features=req.features,
+    )
+    if mem is None:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    await db.commit()
     return _memory_to_response(mem)
 
 

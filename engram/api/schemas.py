@@ -12,6 +12,7 @@ from engram.db.models import VALID_EDGE_TYPES
 # --- Memory schemas ---
 
 class CreateMemoryRequest(BaseModel):
+    id: Optional[str] = None  # Client-provided UUID; auto-generated if omitted
     namespace: str
     content: str
     memory_type: str = "episodic"
@@ -28,10 +29,17 @@ class MemoryResponse(BaseModel):
     content: str
     memory_type: str
     dimension_scores: Dict[str, float] = Field(default_factory=dict)
+    features: Optional[Dict] = Field(default_factory=dict)
+    metadata: Optional[Dict] = Field(default_factory=dict)
     activation: float = 0.0
     salience: float = 0.5
     access_count: int = 0
     created_at: Optional[str] = None
+
+
+class UpdateMemoryRequest(BaseModel):
+    metadata: Optional[dict] = None
+    features: Optional[dict] = None
 
 
 class RetrieveRequest(BaseModel):
