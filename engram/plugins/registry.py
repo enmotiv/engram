@@ -50,6 +50,9 @@ class PluginRegistry:
     def register_post_processor(self, processor: RetrievalPostProcessor) -> None:
         self.post_processor = processor
 
+    def get_trace_enricher(self) -> Optional[TraceEnricher]:
+        return self.trace_enricher
+
     def load_plugin(self, module_path: str) -> None:
         """Import a plugin module and call its register() function."""
         mod = importlib.import_module(module_path)

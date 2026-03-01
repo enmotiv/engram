@@ -10,10 +10,12 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from engram.db.models import Edge, Memory
+from engram.engine.cache import TraceCache
 from engram.engine.edge_ops import EdgeOps
 from engram.engine.edges import EdgeStore
 from engram.engine.embedding import EmbeddingService
 from engram.engine.models import MemoryResult, RetrievalOptions, RetrievalResult
+from engram.engine.tracer import TraceGenerator
 from engram.engine.urgency import score_urgency
 from engram.plugins.registry import PluginRegistry
 
@@ -35,12 +37,15 @@ class Retriever:
         self,
         db: AsyncSession,
         registry: Optional[PluginRegistry] = None,
+        trace_cache: Optional[TraceCache] = None,
     ):
         self.db = db
         self._registry = registry or PluginRegistry.get_instance()
         self._embedding = EmbeddingService(self._registry)
         self._edge_store = EdgeStore(db)
         self._edge_ops = EdgeOps(db)
+        self._tracer = TraceGenerator(self._registry)
+        self._cache = trace_cache
 
     async def retrieve(
         self,
@@ -80,13 +85,32 @@ class Retriever:
         scored = self._convergence_score(candidates, cue_scores)
 
         # Step 4: Spreading activation through typed edges
-        activated, suppressed = await self._spread_activation(
+        activated, suppressed, traversed_edges = await self._spread_activation(
             scored, namespace, opts.hop_depth, context
         )
 
         # Step 5: Sort by activation and limit
         activated.sort(key=lambda m: m.activation, reverse=True)
         results = activated[: opts.max_results]
+
+        # Step 6: Generate trace
+        trace = None
+        if results and opts.trace_format == "graph":
+            memory_ids = [m.id for m in results]
+            if suppressed:
+                memory_ids += [s["id"] for s in suppressed]
+
+            cache_key = None
+            if self._cache:
+                cache_key = TraceCache.compute_cache_key(namespace, memory_ids)
+                cached = await self._cache.get(namespace, cache_key)
+                if cached:
+                    trace = cached
+
+            if trace is None:
+                trace = self._tracer.generate(results, traversed_edges, suppressed)
+                if self._cache and cache_key:
+                    await self._cache.set(namespace, cache_key, trace)
 
         elapsed = round((time.monotonic() - start) * 1000, 2)
 
@@ -95,6 +119,7 @@ class Retriever:
             urgency=urgency,
             memories=results,
             suppressed=suppressed,
+            trace=trace,
             retrieval_ms=elapsed,
         )
 
@@ -178,17 +203,18 @@ class Retriever:
         namespace: str,
         hop_depth: int,
         context: Optional[dict] = None,
-    ) -> tuple[List[MemoryResult], List[dict]]:
+    ) -> tuple[List[MemoryResult], List[dict], List[dict]]:
         """Spread activation through typed edges from seed memories.
 
-        Returns (activated_memories, suppressed_memories).
+        Returns (activated_memories, suppressed_memories, traversed_edges).
         """
         if not seeds:
-            return [], []
+            return [], [], []
 
         # Map memory_id → MemoryResult for all active nodes
         active: Dict[str, MemoryResult] = {m.id: m for m in seeds}
         suppressed: List[dict] = []
+        traversed_edges: List[dict] = []
 
         # Track which nodes are direct results vs discovered via spreading
         direct_ids = {m.id for m in seeds}
@@ -241,6 +267,15 @@ class Retriever:
                 multiplier = _EDGE_MULTIPLIERS.get(edge.edge_type, 0.5)
                 delta = source_activation * edge.weight * multiplier
 
+                # Record edge for trace generation
+                traversed_edges.append({
+                    "source_memory_id": source_id,
+                    "target_memory_id": target_id,
+                    "edge_type": edge.edge_type,
+                    "weight": edge.weight,
+                    "context": edge.context or {},
+                })
+
                 if target_id in active:
                     # Update existing node's activation
                     active[target_id].activation += delta
@@ -274,7 +309,7 @@ class Retriever:
                     mem_result.retrieval_path = "spreading"
                 result_list.append(mem_result)
 
-        return result_list, suppressed
+        return result_list, suppressed, traversed_edges
 
     def _context_overlaps(
         self, edge_context: Optional[dict], retrieval_context: Optional[dict]
