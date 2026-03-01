@@ -123,7 +123,9 @@ class EngramClient:
         }
         resp = await self._client.post("/v1/memories/batch", json=payload)
         resp.raise_for_status()
-        return [MemoryResponse(**d) for d in resp.json()]
+        data = resp.json()
+        items = data.get("created", data) if isinstance(data, dict) else data
+        return [MemoryResponse(**d) for d in items]
 
     async def retrieve(
         self,

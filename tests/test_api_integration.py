@@ -195,4 +195,5 @@ async def test_batch_create(client):
     })
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data) == 3
+    assert "created" in data
+    assert len(data["created"]) == 3

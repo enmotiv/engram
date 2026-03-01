@@ -16,9 +16,9 @@ from engram.plugins.registry import PluginRegistry
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup/shutdown lifecycle."""
-    # Load plugin
+    # Load plugins (supports multiple comma-separated plugins)
     registry = PluginRegistry.get_instance()
-    registry.load_plugin(settings.ENGRAM_PLUGIN)
+    registry.load_plugins(settings.plugin_paths)
     app.state.registry = registry
 
     # Redis for trace cache
