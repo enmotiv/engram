@@ -38,11 +38,11 @@ class WorkerJob(ABC):
         ...
 
     @abstractmethod
-    async def should_run(self, namespace: str) -> bool:
+    async def should_run(self, namespace: str, **kwargs) -> bool:
         ...
 
     @abstractmethod
-    async def execute(self, namespace: str) -> dict:
+    async def execute(self, namespace: str, **kwargs) -> dict:
         ...
 
 
