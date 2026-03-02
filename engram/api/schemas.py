@@ -127,6 +127,73 @@ class BatchEnrichResponse(BaseModel):
     failed: List[str] = Field(default_factory=list)
 
 
+# --- Snippet (Layer 1) schemas ---
+
+class SnippetRequest(BaseModel):
+    ids: List[str]
+
+
+class EdgeSummary(BaseModel):
+    excitatory_count: int = 0
+    inhibitory_count: int = 0
+    associative_count: int = 0
+
+
+class SnippetMemoryResponse(BaseModel):
+    id: str
+    created_at: Optional[str] = None
+    namespace: str
+    memory_type: str = "episodic"
+    content: str  # first 200 chars, truncated with "..."
+    top_dimensions: Dict[str, float] = Field(default_factory=dict)  # top 5 by score
+    entity_ids: List[str] = Field(default_factory=list)
+    edge_summary: EdgeSummary = Field(default_factory=EdgeSummary)
+    texture_summary: Optional[str] = None
+    enrichment_status: str = "raw"
+
+
+class SnippetResponse(BaseModel):
+    snippets: List[SnippetMemoryResponse] = Field(default_factory=list)
+
+
+# --- Full batch (Layer 2) schemas ---
+
+class FullBatchRequest(BaseModel):
+    ids: List[str]
+
+
+class LinkedMemorySnippet(BaseModel):
+    id: str
+    content: str  # first 100 chars
+
+
+class FullEdge(BaseModel):
+    id: str
+    edge_type: str
+    target_id: str
+    weight: float
+    linked_memory: Optional[LinkedMemorySnippet] = None
+
+
+class FullMemoryResponse(BaseModel):
+    id: str
+    namespace: str
+    content: str
+    memory_type: str = "episodic"
+    dimension_scores: Dict[str, float] = Field(default_factory=dict)
+    features: Optional[Dict] = Field(default_factory=dict)
+    activation: float = 0.0
+    salience: float = 0.5
+    access_count: int = 0
+    created_at: Optional[str] = None
+    last_accessed: Optional[str] = None
+    edges: List[FullEdge] = Field(default_factory=list)
+
+
+class FullBatchResponse(BaseModel):
+    memories: List[FullMemoryResponse] = Field(default_factory=list)
+
+
 # --- Edge schemas ---
 
 class CreateEdgeRequest(BaseModel):
