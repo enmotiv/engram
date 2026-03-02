@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://engram:engram@localhost:5432/engram"
     REDIS_URL: str = "redis://localhost:6379/0"
-    EMBEDDING_DIM: int = 384
+    EMBEDDING_DIM: int = 1024
     ENGRAM_PLUGIN: str = "engram.plugins.default"
     ENGRAM_PLUGINS: str = ""  # Comma-separated plugin modules (overrides ENGRAM_PLUGIN when set)
 

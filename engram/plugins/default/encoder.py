@@ -18,7 +18,7 @@ _DATE_PATTERNS = re.compile(
 
 
 class DefaultEncoder(Encoder):
-    """Produces 384-dim embeddings via sentence-transformers and heuristic dimension scores."""
+    """Produces 1024-dim embeddings via BGE-M3 and heuristic dimension scores."""
 
     def __init__(self):
         self._model = None
@@ -26,7 +26,7 @@ class DefaultEncoder(Encoder):
     def _get_model(self):
         if self._model is None:
             from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer("all-MiniLM-L6-v2")
+            self._model = SentenceTransformer("BAAI/bge-m3")
         return self._model
 
     async def embed(self, text: str) -> Optional[List[float]]:

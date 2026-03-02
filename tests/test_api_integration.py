@@ -259,3 +259,47 @@ async def test_batch_create(client):
     data = resp.json()
     assert "created" in data
     assert len(data["created"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_embedding_is_1024_dimensions(app):
+    """Store a memory and verify embedding is 1024-dim BGE-M3."""
+    import engram.db.session as sess
+
+    async with sess.async_session_factory() as session:
+        from engram.engine.store import MemoryStore
+        from engram.plugins.registry import PluginRegistry
+
+        store = MemoryStore(session, PluginRegistry.get_instance())
+        mem = await store.create(
+            namespace="user:embed_test",
+            content="Testing BGE-M3 embedding dimensions",
+        )
+        await session.commit()
+
+        assert mem.embedding is not None
+        assert len(mem.embedding) == 1024
+
+
+@pytest.mark.asyncio
+async def test_similar_memories_vector_search(client):
+    """Store two similar memories and verify retrieval finds them."""
+    ns = "user:similarity_test"
+    await client.post("/v1/memories", json={
+        "namespace": ns,
+        "content": "The cat sat on the warm windowsill watching birds",
+    })
+    await client.post("/v1/memories", json={
+        "namespace": ns,
+        "content": "A kitten perched on the window ledge observing sparrows",
+    })
+
+    resp = await client.post("/v1/memories/retrieve", json={
+        "namespace": ns,
+        "cue": "What do you remember about a cat watching birds from window?",
+        "max_results": 5,
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["triggered"] is True
+    assert len(data["memories"]) >= 1

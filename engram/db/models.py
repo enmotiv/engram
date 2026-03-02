@@ -29,7 +29,7 @@ class Memory(Base):
     namespace = Column(Text, nullable=False, index=True)
     content = Column(Text, nullable=False)
     memory_type = Column(Text, default="episodic")
-    embedding = Column(Vector(384))
+    embedding = Column(Vector(1024))
     dimension_vectors = Column(JSONB, default=dict)
     dimension_scores = Column(JSONB, default=dict)
     features = Column(JSONB, default=dict)
@@ -114,7 +114,7 @@ class Edge(Base):
     weight = Column(Float, default=0.5)
     context = Column(JSONB, default=dict)
     context_features = Column(JSONB)
-    context_embedding = Column(Vector(384))
+    context_embedding = Column(Vector(1024))
     namespace = Column(Text, default="default")
     created_at = Column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
