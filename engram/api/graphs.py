@@ -48,19 +48,6 @@ def _graph_to_response(graph) -> GraphSnapshotResponse:
     )
 
 
-@router.get("/graphs/{namespace:path}", response_model=GraphSnapshotResponse)
-async def get_latest_graph(
-    namespace: str,
-    db: AsyncSession = Depends(get_db),
-):
-    """Get the latest graph snapshot for a namespace."""
-    store = GraphStore(db)
-    graph = await store.get_latest(namespace)
-    if graph is None:
-        raise HTTPException(status_code=404, detail="No graph snapshot found")
-    return _graph_to_response(graph)
-
-
 @router.get("/graphs/{namespace:path}/history")
 async def get_graph_history(
     namespace: str,
@@ -72,6 +59,19 @@ async def get_graph_history(
     store = GraphStore(db)
     graphs = await store.get_history(namespace, limit=limit, offset=offset)
     return {"snapshots": [_graph_to_response(g) for g in graphs]}
+
+
+@router.get("/graphs/{namespace:path}", response_model=GraphSnapshotResponse)
+async def get_latest_graph(
+    namespace: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the latest graph snapshot for a namespace."""
+    store = GraphStore(db)
+    graph = await store.get_latest(namespace)
+    if graph is None:
+        raise HTTPException(status_code=404, detail="No graph snapshot found")
+    return _graph_to_response(graph)
 
 
 @router.post("/graphs/{namespace:path}", response_model=GraphSnapshotResponse)

@@ -51,12 +51,12 @@ async def test_encode_temporal_detection(registry):
 
 
 @pytest.mark.asyncio
-async def test_embed_returns_384_dim_vector(registry):
+async def test_embed_returns_1024_dim_vector(registry):
     vec = await registry.encoder.embed(
         "We migrated the database to AWS last Tuesday"
     )
     assert isinstance(vec, list)
-    assert len(vec) == 384
+    assert len(vec) == 1024
     assert all(isinstance(x, float) for x in vec)
 
 

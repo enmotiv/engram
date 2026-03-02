@@ -39,7 +39,7 @@ async def test_create_memory_with_embedding(store):
     assert mem.namespace == NAMESPACE
     assert mem.content == SAMPLE_CONTENTS[0]
     assert mem.embedding is not None
-    assert len(list(mem.embedding)) == 384
+    assert len(list(mem.embedding)) == 1024
     assert "semantic" in mem.dimension_scores
 
 
@@ -53,7 +53,7 @@ async def test_create_five_memories(store):
     assert len(mems) == 5
     for mem in mems:
         assert mem.embedding is not None
-        assert len(list(mem.embedding)) == 384
+        assert len(list(mem.embedding)) == 1024
         assert set(mem.dimension_scores.keys()) == {"semantic", "temporal", "importance"}
 
 
