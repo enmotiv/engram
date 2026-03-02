@@ -52,14 +52,20 @@ async def create_memory(
     store: MemoryStore = Depends(get_memory_store),
     db: AsyncSession = Depends(get_db),
 ):
-    mem = await store.create(
-        namespace=req.namespace,
-        content=req.content,
-        memory_type=req.memory_type,
-        metadata=req.metadata,
-        memory_id=req.id,
-    )
-    await db.commit()
+    from sqlalchemy.exc import IntegrityError
+
+    try:
+        mem = await store.create(
+            namespace=req.namespace,
+            content=req.content,
+            memory_type=req.memory_type,
+            metadata=req.metadata,
+            memory_id=req.id,
+        )
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Memory with this ID already exists")
     return _memory_to_response(mem)
 
 

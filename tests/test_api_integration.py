@@ -184,6 +184,68 @@ async def test_health(client):
 
 
 @pytest.mark.asyncio
+async def test_create_with_explicit_id(client):
+    """POST /v1/memories with explicit UUID → stored with that exact ID."""
+    explicit_id = "550e8400-e29b-41d4-a716-446655440000"
+    resp = await client.post("/v1/memories", json={
+        "id": explicit_id,
+        "namespace": NS,
+        "content": "Memory with client-provided UUID",
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == explicit_id
+
+    # GET by that UUID returns it
+    resp2 = await client.get(f"/v1/memories/{explicit_id}")
+    assert resp2.status_code == 200
+    assert resp2.json()["content"] == "Memory with client-provided UUID"
+
+
+@pytest.mark.asyncio
+async def test_create_duplicate_id_returns_409(client):
+    """POST /v1/memories with duplicate id → 409 Conflict."""
+    dup_id = "660e8400-e29b-41d4-a716-446655440001"
+    resp1 = await client.post("/v1/memories", json={
+        "id": dup_id,
+        "namespace": NS,
+        "content": "First memory",
+    })
+    assert resp1.status_code == 200
+
+    resp2 = await client.post("/v1/memories", json={
+        "id": dup_id,
+        "namespace": NS,
+        "content": "Duplicate ID attempt",
+    })
+    assert resp2.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_list_memories_by_namespace(client):
+    """GET /v1/memories?namespace=... returns memories in that namespace."""
+    test_ns = "user:list_test"
+    for i in range(3):
+        await client.post("/v1/memories", json={
+            "namespace": test_ns,
+            "content": f"List test memory {i}",
+        })
+
+    resp = await client.get(f"/v1/memories?namespace={test_ns}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["memories"]) >= 3
+
+
+@pytest.mark.asyncio
+async def test_list_memories_empty_namespace(client):
+    """GET /v1/memories for nonexistent namespace → empty list, not error."""
+    resp = await client.get("/v1/memories?namespace=user:does_not_exist")
+    assert resp.status_code == 200
+    assert resp.json()["memories"] == []
+
+
+@pytest.mark.asyncio
 async def test_batch_create(client):
     """Batch create multiple memories."""
     resp = await client.post("/v1/memories/batch", json={
