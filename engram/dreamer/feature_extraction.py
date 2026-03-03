@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from typing import Dict, List, Optional
 
@@ -10,6 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from engram.db.models import Memory
 from engram.engine.interfaces import WorkerJob
+from engram.engine.llm import get_llm_service
+
+logger = logging.getLogger(__name__)
 
 # Keyword sets for heuristic classification
 _DOMAIN_KEYWORDS = {
@@ -124,6 +129,51 @@ def extract_features_heuristic(content: str) -> Dict[str, str]:
     return features
 
 
+_FEATURE_EXTRACTION_PROMPT = (
+    "Classify this memory on the following dimensions. Return JSON only, "
+    "with exactly these keys and one value per key.\n\n"
+    "domain: infrastructure | product | content | process | people | finance\n"
+    "action_type: migration | optimization | debugging | building | deciding | learning\n"
+    "dynamic: growth | decline | transition | stability | conflict | resolution\n"
+    "scope: individual | team | system | organization\n"
+    "causality: cause | effect | correlation | independent\n"
+    "valence: positive | negative | mixed\n"
+    "abstraction: concrete_event | recurring_pattern | general_principle\n\n"
+    "Memory: {content}"
+)
+
+_VALID_VALUES = {
+    "domain": {"infrastructure", "product", "content", "process", "people", "finance"},
+    "action_type": {"migration", "optimization", "debugging", "building", "deciding", "learning"},
+    "dynamic": {"growth", "decline", "transition", "stability", "conflict", "resolution"},
+    "scope": {"individual", "team", "system", "organization"},
+    "causality": {"cause", "effect", "correlation", "independent"},
+    "valence": {"positive", "negative", "mixed"},
+    "abstraction": {"concrete_event", "recurring_pattern", "general_principle"},
+}
+
+
+async def extract_features_llm(content: str) -> Optional[Dict[str, str]]:
+    """Extract features via LLM. Returns None on failure."""
+    llm = get_llm_service()
+    if not llm.is_available():
+        return None
+
+    prompt = _FEATURE_EXTRACTION_PROMPT.format(content=content)
+    try:
+        raw = await llm.complete(prompt, max_tokens=150, temperature=0.1, json_mode=True)
+        features = json.loads(raw)
+
+        # Validate all keys present with valid values
+        for key, valid in _VALID_VALUES.items():
+            if key not in features or features[key] not in valid:
+                return None
+        return {k: features[k] for k in _VALID_VALUES}
+    except Exception:
+        logger.debug("LLM feature extraction failed, will use heuristic")
+        return None
+
+
 def features_to_vector(features: Dict[str, str]) -> List[float]:
     """One-hot encode features into a 32-dim vector."""
     vec = []
@@ -141,6 +191,13 @@ class FeatureExtractionJob(WorkerJob):
     async def should_run(self, namespace: str, **kwargs) -> bool:
         return True
 
+    async def _extract(self, content: str) -> Dict[str, str]:
+        """Try LLM extraction, fall back to heuristic."""
+        features = await extract_features_llm(content)
+        if features is not None:
+            return features
+        return extract_features_heuristic(content)
+
     async def execute(self, namespace: str, **kwargs) -> dict:
         db: AsyncSession = kwargs["db"]
         memory_id = kwargs.get("memory_id")
@@ -149,7 +206,7 @@ class FeatureExtractionJob(WorkerJob):
             mem = await db.get(Memory, memory_id)
             if mem is None:
                 return {"processed": 0}
-            features = extract_features_heuristic(mem.content)
+            features = await self._extract(mem.content)
             mem.features = features
             mem.feature_vector = features_to_vector(features)
             await db.flush()
@@ -167,7 +224,7 @@ class FeatureExtractionJob(WorkerJob):
         memories = list(result.scalars().all())
 
         for mem in memories:
-            features = extract_features_heuristic(mem.content)
+            features = await self._extract(mem.content)
             mem.features = features
             mem.feature_vector = features_to_vector(features)
 

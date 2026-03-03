@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from typing import Dict, List, Optional, Tuple
 
@@ -11,6 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from engram.db.models import Memory
 from engram.engine.edges import EdgeStore
 from engram.engine.interfaces import WorkerJob
+from engram.engine.llm import get_llm_service
+
+logger = logging.getLogger(__name__)
 
 # Contradiction / superseding keywords → inhibitory
 _INHIBITORY_KEYWORDS = {
@@ -65,6 +70,44 @@ def classify_edge_heuristic(
     return None
 
 
+_EDGE_PROMPT = (
+    "What is the relationship between these two memories?\n"
+    "A: {content_a}\n"
+    "B: {content_b}\n\n"
+    "Options:\n"
+    "- excitatory (reinforcing or supporting)\n"
+    "- inhibitory (contradicting or superseding)\n"
+    "- associative (related but neither reinforcing nor contradicting)\n"
+    "- temporal (time-linked sequence)\n\n"
+    'Return JSON only: {{"edge_type": "...", "confidence": 0.0-1.0}}'
+)
+
+_VALID_EDGE_TYPES = {"excitatory", "inhibitory", "associative", "temporal"}
+
+
+async def classify_edge_llm(
+    content_a: str, content_b: str, similarity: float,
+) -> Optional[Tuple[str, float]]:
+    """Classify an ambiguous edge (similarity 0.4-0.7) via LLM."""
+    llm = get_llm_service()
+    if not llm.is_available():
+        return None
+
+    prompt = _EDGE_PROMPT.format(content_a=content_a, content_b=content_b)
+    try:
+        raw = await llm.complete(prompt, max_tokens=100, temperature=0.1, json_mode=True)
+        result = json.loads(raw)
+        edge_type = result.get("edge_type", "")
+        confidence = float(result.get("confidence", 0.0))
+
+        if edge_type not in _VALID_EDGE_TYPES or not (0.0 <= confidence <= 1.0):
+            return None
+        return (edge_type, confidence)
+    except Exception:
+        logger.debug("LLM edge classification failed, using heuristic")
+        return None
+
+
 class EdgeClassificationJob(WorkerJob):
     def name(self) -> str:
         return "edge_classification"
@@ -90,11 +133,22 @@ class EdgeClassificationJob(WorkerJob):
         edges_created = 0
 
         for neighbor, similarity in neighbors:
+            # Clear cases: use heuristic. Ambiguous range (0.4-0.7): try LLM.
             result = classify_edge_heuristic(mem.content, neighbor.content, similarity)
+
             if result is None:
                 continue
 
             edge_type, confidence = result
+
+            # For ambiguous associative edges, ask LLM for a better classification
+            if edge_type == "associative" and 0.4 < similarity < 0.7:
+                llm_result = await classify_edge_llm(
+                    mem.content, neighbor.content, similarity,
+                )
+                if llm_result is not None:
+                    edge_type, confidence = llm_result
+
             if confidence < 0.4:
                 continue
 

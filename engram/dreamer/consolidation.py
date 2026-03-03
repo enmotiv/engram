@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, List, Set
 
 from sqlalchemy import select, text
@@ -10,8 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from engram.db.models import Memory
 from engram.engine.edges import EdgeStore
 from engram.engine.interfaces import WorkerJob
+from engram.engine.llm import get_llm_service
 from engram.engine.store import MemoryStore
 from engram.plugins.registry import PluginRegistry
+
+logger = logging.getLogger(__name__)
 
 
 class ConsolidationJob(WorkerJob):
@@ -61,9 +65,8 @@ class ConsolidationJob(WorkerJob):
             if len(cluster_mems) < 3:
                 continue
 
-            # Generate summary (concatenate, truncate — no LLM for MVP)
-            combined = " | ".join(m.content for m in cluster_mems)
-            summary_content = combined[:500]
+            # Generate summary — LLM abstractive or heuristic concatenation
+            summary_content = await self._summarize_cluster(cluster_mems)
 
             # Create semantic summary memory
             summary = await store.create(
@@ -142,3 +145,23 @@ class ConsolidationJob(WorkerJob):
                 clusters.append([mem_by_id[cid] for cid in cluster_ids])
 
         return clusters
+
+    async def _summarize_cluster(self, cluster_mems: List[Memory]) -> str:
+        """Summarize a cluster of memories. Uses LLM if available, else concatenation."""
+        llm = get_llm_service()
+        if not llm.is_available():
+            combined = " | ".join(m.content for m in cluster_mems)
+            return combined[:500]
+
+        combined = "\n- ".join(m.content for m in cluster_mems)
+        prompt = (
+            "Summarize these related memories into a single concise observation "
+            "(1-2 sentences). Preserve key details and specifics.\n\n"
+            f"Memories:\n- {combined}"
+        )
+        try:
+            return await llm.complete(prompt, max_tokens=200, temperature=0.3)
+        except Exception:
+            logger.debug("LLM summarization failed, using concatenation fallback")
+            combined = " | ".join(m.content for m in cluster_mems)
+            return combined[:500]

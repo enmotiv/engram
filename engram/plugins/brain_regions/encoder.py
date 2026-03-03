@@ -2,18 +2,14 @@
 
 import json
 import logging
-import os
 import re
 from typing import Dict, List, Optional
 
-import httpx
-
 from engram.engine.interfaces import Encoder
+from engram.engine.llm import get_llm_service
 from engram.plugins.brain_regions.prompts import BRAIN_REGION_PROMPT
 
 logger = logging.getLogger(__name__)
-
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 
 _EMOTION_WORDS = frozenset({
     "happy", "sad", "angry", "afraid", "terrified", "anxious", "excited", "frustrated",
@@ -69,21 +65,20 @@ class BrainRegionEncoder(Encoder):
         return vec.tolist()
 
     async def encode(self, text: str) -> Dict[str, float]:
-        try:
-            return await self._llm_encode(text)
-        except Exception:
-            logger.debug("Ollama unavailable, using heuristic fallback")
-            return self.heuristic_encode(text)
+        """Heuristic scoring on hot path. LLM upgrade happens via dreamer backfill."""
+        return self.heuristic_encode(text)
+
+    async def llm_encode(self, text: str) -> Dict[str, float]:
+        """LLM-based scoring — called by dreamer's DimensionRescoringJob, not inline."""
+        llm = get_llm_service()
+        if not llm.is_available():
+            raise RuntimeError("LLM not available for dimension rescoring")
+        return await self._llm_encode(text)
 
     async def _llm_encode(self, text: str) -> Dict[str, float]:
+        llm = get_llm_service()
         prompt = BRAIN_REGION_PROMPT.format(text=text)
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                f"{OLLAMA_HOST}/api/generate",
-                json={"model": "llama3.2", "prompt": prompt, "stream": False, "format": "json"},
-            )
-            resp.raise_for_status()
-            raw = resp.json().get("response", "")
+        raw = await llm.complete(prompt, max_tokens=200, temperature=0.1, json_mode=True)
 
         scores = json.loads(raw)
         if not BRAIN_REGION_KEYS.issubset(scores.keys()):

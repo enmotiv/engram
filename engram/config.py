@@ -10,6 +10,12 @@ class Settings(BaseSettings):
     ENGRAM_PLUGIN: str = "engram.plugins.brain_regions"
     ENGRAM_PLUGINS: str = ""  # Comma-separated plugin modules (overrides ENGRAM_PLUGIN when set)
 
+    # LLM provider: "none" (heuristic only), "ollama", or "openai" (OpenAI-compatible)
+    LLM_PROVIDER: str = "none"
+    LLM_API_KEY: str = ""
+    LLM_BASE_URL: str = ""  # Auto-set per provider if empty
+    LLM_MODEL: str = ""
+
     model_config = {"env_prefix": "ENGRAM_", "env_file": ".env"}
 
     @property
