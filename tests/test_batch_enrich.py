@@ -75,7 +75,7 @@ async def test_batch_update_preserves_existing(db, registry):
     store = MemoryStore(db, registry)
     m1 = await store.create(
         NS, "Memory with data",
-        metadata={"enrichment_status": "raw", "enmotiv_type": "observation"},
+        metadata={"enrichment_status": "raw", "source_type": "observation"},
     )
     await db.flush()
 
@@ -90,4 +90,4 @@ async def test_batch_update_preserves_existing(db, registry):
     assert result.features["enrichment_status"] == "enriched"
     assert result.features["new_field"] == "value"
     # Existing fields preserved
-    assert result.features["enmotiv_type"] == "observation"
+    assert result.features["source_type"] == "observation"

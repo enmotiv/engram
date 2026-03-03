@@ -116,9 +116,9 @@ async def list_memories(
         .limit(limit)
     )
     if memory_type:
-        # memory_type is stored inside features JSONB as enmotiv_type
+        # Plugins store source type in features.source_type
         stmt = stmt.where(
-            Memory.features["enmotiv_type"].astext == memory_type
+            Memory.features["source_type"].astext == memory_type
         )
     result = await store.db.execute(stmt)
     memories = list(result.scalars().all())
