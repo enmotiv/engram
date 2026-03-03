@@ -16,6 +16,8 @@ class MemoryResponse:
     content: str
     memory_type: str = "episodic"
     dimension_scores: Dict[str, float] = field(default_factory=dict)
+    features: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
     activation: float = 0.0
     salience: float = 0.5
     access_count: int = 0

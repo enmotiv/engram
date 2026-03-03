@@ -1,15 +1,24 @@
-"""Test the plugin system: registry, default plugin, encode + embed pipeline."""
+"""Test the plugin system: registry, brain_regions plugin, encode + embed pipeline."""
 
 import pytest
 
 from engram.plugins.registry import PluginRegistry
+
+BRAIN_REGION_DIMS = {"hippocampus", "amygdala", "prefrontal_cortex", "sensory_cortices", "striatum"}
+BRAIN_REGION_WEIGHTS = {
+    "hippocampus": 0.9,
+    "amygdala": 0.8,
+    "prefrontal_cortex": 1.0,
+    "sensory_cortices": 0.6,
+    "striatum": 0.7,
+}
 
 
 @pytest.fixture
 def registry():
     PluginRegistry.reset()
     reg = PluginRegistry.get_instance()
-    reg.load_plugin("engram.plugins.default")
+    reg.load_plugin("engram.plugins.brain_regions")
     yield reg
     PluginRegistry.reset()
 
@@ -22,32 +31,40 @@ def test_singleton():
     PluginRegistry.reset()
 
 
-def test_default_dimensions_loaded(registry):
+def test_brain_region_dimensions_loaded(registry):
     assert registry.dimensions is not None
-    assert registry.dimensions.names() == ["semantic", "temporal", "importance"]
+    assert set(registry.dimensions.names()) == BRAIN_REGION_DIMS
 
 
-def test_default_weights(registry):
+def test_brain_region_weights(registry):
     weights = registry.dimensions.default_weights()
-    assert weights == {"semantic": 1.0, "temporal": 0.7, "importance": 0.8}
+    assert weights == BRAIN_REGION_WEIGHTS
 
 
 @pytest.mark.asyncio
-async def test_encode_returns_dimension_scores(registry):
+async def test_encode_returns_5_brain_region_scores(registry):
     scores = await registry.encoder.encode(
         "We migrated the database to AWS last Tuesday"
     )
-    assert set(scores.keys()) == {"semantic", "temporal", "importance"}
+    assert set(scores.keys()) == BRAIN_REGION_DIMS
     for v in scores.values():
         assert 0.0 <= v <= 1.0
 
 
 @pytest.mark.asyncio
-async def test_encode_temporal_detection(registry):
+async def test_encode_hippocampus_temporal_detection(registry):
     scores = await registry.encoder.encode(
         "We migrated the database to AWS last Tuesday"
     )
-    assert scores["temporal"] > 0.0, "Should detect 'last Tuesday' as temporal"
+    assert scores["hippocampus"] > 0.0, "Should detect 'last Tuesday' as hippocampus-relevant"
+
+
+@pytest.mark.asyncio
+async def test_encode_amygdala_emotion_detection(registry):
+    scores = await registry.encoder.encode(
+        "I felt terrified and overwhelmed by the situation"
+    )
+    assert scores["amygdala"] > 0.0, "Should detect emotion words as amygdala-relevant"
 
 
 @pytest.mark.asyncio

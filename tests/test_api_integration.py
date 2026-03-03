@@ -180,7 +180,7 @@ async def test_health(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] in ("ok", "degraded")
-    assert data["plugin"] == "engram.plugins.default"
+    assert data["plugin"] == "engram.plugins.brain_regions"
 
 
 @pytest.mark.asyncio

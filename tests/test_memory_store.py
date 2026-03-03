@@ -13,7 +13,7 @@ NAMESPACE = "user:test_store"
 def registry():
     PluginRegistry.reset()
     reg = PluginRegistry.get_instance()
-    reg.load_plugin("engram.plugins.default")
+    reg.load_plugin("engram.plugins.brain_regions")
     yield reg
     PluginRegistry.reset()
 
@@ -40,7 +40,7 @@ async def test_create_memory_with_embedding(store):
     assert mem.content == SAMPLE_CONTENTS[0]
     assert mem.embedding is not None
     assert len(list(mem.embedding)) == 1024
-    assert "semantic" in mem.dimension_scores
+    assert "hippocampus" in mem.dimension_scores
 
 
 @pytest.mark.asyncio
@@ -54,7 +54,7 @@ async def test_create_five_memories(store):
     for mem in mems:
         assert mem.embedding is not None
         assert len(list(mem.embedding)) == 1024
-        assert set(mem.dimension_scores.keys()) == {"semantic", "temporal", "importance"}
+        assert set(mem.dimension_scores.keys()) == {"hippocampus", "amygdala", "prefrontal_cortex", "sensory_cortices", "striatum"}
 
 
 @pytest.mark.asyncio

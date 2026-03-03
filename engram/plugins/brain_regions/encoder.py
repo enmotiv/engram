@@ -60,7 +60,7 @@ class BrainRegionEncoder(Encoder):
     def _get_embed_model(self):
         if self._embed_model is None:
             from sentence_transformers import SentenceTransformer
-            self._embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+            self._embed_model = SentenceTransformer("BAAI/bge-m3")
         return self._embed_model
 
     async def embed(self, text: str) -> Optional[List[float]]:

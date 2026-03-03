@@ -60,7 +60,7 @@ class ModulatoryDiscoveryJob(WorkerJob):
 
                 # Compute content embedding similarity (low = topically different)
                 content_sim = await self._cosine_similarity(
-                    db, list(m1.embedding), list(m2.embedding), "vector(384)"
+                    db, list(m1.embedding), list(m2.embedding), "vector(1024)"
                 )
 
                 if feature_sim is None or content_sim is None:

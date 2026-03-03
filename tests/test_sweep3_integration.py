@@ -56,7 +56,7 @@ async def app():
 
     PluginRegistry.reset()
     registry = PluginRegistry.get_instance()
-    registry.load_plugin(cfg.settings.ENGRAM_PLUGIN)
+    registry.load_plugin("engram.plugins.brain_regions")
     application.state.registry = registry
     application.state.trace_cache = TraceCache(cfg.settings.REDIS_URL)
 
@@ -89,10 +89,14 @@ async def test_dimension_scores_present(client):
     })
     assert resp.status_code == 200
     data = resp.json()
-    # Default plugin provides: semantic, temporal, importance
-    assert "semantic" in data.get("dimension_scores", {})
-    assert "temporal" in data.get("dimension_scores", {})
-    assert "importance" in data.get("dimension_scores", {})
+    # Brain regions plugin provides: hippocampus, amygdala, prefrontal_cortex, sensory_cortices, striatum
+    dim_scores = data.get("dimension_scores", {})
+    assert "hippocampus" in dim_scores
+    assert "amygdala" in dim_scores
+    assert "prefrontal_cortex" in dim_scores
+    assert "sensory_cortices" in dim_scores
+    assert "striatum" in dim_scores
+    assert len(dim_scores) == 5
 
 
 # -- Checklist 2: 1024-dim BGE-M3 embeddings --

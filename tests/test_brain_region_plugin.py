@@ -68,10 +68,10 @@ async def test_heuristic_detects_sensory(registry):
 
 
 @pytest.mark.asyncio
-async def test_embed_returns_384_dim(registry):
+async def test_embed_returns_1024_dim(registry):
     vec = await registry.encoder.embed(SAMPLE_TEXT)
     assert isinstance(vec, list)
-    assert len(vec) == 384
+    assert len(vec) == 1024
 
 
 def test_heuristic_fallback_directly():

@@ -16,7 +16,7 @@ NS = "user:modulatory_test"
 def registry():
     PluginRegistry.reset()
     reg = PluginRegistry.get_instance()
-    reg.load_plugin("engram.plugins.default")
+    reg.load_plugin("engram.plugins.brain_regions")
     yield reg
     PluginRegistry.reset()
 
