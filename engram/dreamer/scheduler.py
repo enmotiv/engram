@@ -123,6 +123,21 @@ async def run_plugin_jobs(ctx):
         await db.commit()
 
 
+def _parse_redis_settings():
+    """Parse ENGRAM_REDIS_URL into arq RedisSettings."""
+    from arq.connections import RedisSettings
+    from urllib.parse import urlparse
+
+    url = settings.REDIS_URL
+    parsed = urlparse(url)
+    return RedisSettings(
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 6379,
+        password=parsed.password,
+        database=int(parsed.path.lstrip("/") or 0),
+    )
+
+
 class WorkerSettings:
     functions = [run_decay, run_prune, run_consolidation, run_modulatory, run_graph_generation, run_plugin_jobs]
     cron_jobs = [
@@ -135,4 +150,4 @@ class WorkerSettings:
     ]
     on_startup = startup
     on_shutdown = shutdown
-    redis_settings = None  # Set from ENGRAM_REDIS_URL at runtime
+    redis_settings = _parse_redis_settings()
