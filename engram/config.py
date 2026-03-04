@@ -10,6 +10,12 @@ class Settings(BaseSettings):
     ENGRAM_PLUGIN: str = "engram.plugins.brain_regions"
     ENGRAM_PLUGINS: str = ""  # Comma-separated plugin modules (overrides ENGRAM_PLUGIN when set)
 
+    # Embedding: "local" (sentence-transformers) or "api" (OpenAI-compatible endpoint)
+    EMBEDDING_PROVIDER: str = "api"  # "api" or "local"
+    EMBEDDING_API_URL: str = ""  # e.g. https://openrouter.ai/api/v1/embeddings
+    EMBEDDING_API_KEY: str = ""  # API key for embedding endpoint
+    EMBEDDING_MODEL: str = "baai/bge-m3"  # model name for API calls
+
     # LLM provider: "none" (heuristic only), "ollama", or "openai" (OpenAI-compatible)
     LLM_PROVIDER: str = "none"
     LLM_API_KEY: str = ""

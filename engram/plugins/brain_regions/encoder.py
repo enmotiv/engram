@@ -51,18 +51,51 @@ class BrainRegionEncoder(Encoder):
     """Scores text on 5 brain regions via LLM or heuristic fallback."""
 
     def __init__(self):
-        self._embed_model = None
-
-    def _get_embed_model(self):
-        if self._embed_model is None:
-            from sentence_transformers import SentenceTransformer
-            self._embed_model = SentenceTransformer("BAAI/bge-m3")
-        return self._embed_model
+        self._embed_model = None  # lazy local model (only if EMBEDDING_PROVIDER=local)
 
     async def embed(self, text: str) -> Optional[List[float]]:
-        model = self._get_embed_model()
+        from engram.config import settings
+
+        if settings.EMBEDDING_PROVIDER == "api" and settings.EMBEDDING_API_URL:
+            return await self._embed_via_api(text)
+        return await self._embed_local(text)
+
+    async def _embed_via_api(self, text: str) -> Optional[List[float]]:
+        """Call an OpenAI-compatible embedding API (OpenRouter, etc.)."""
+        import httpx
+        from engram.config import settings
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    settings.EMBEDDING_API_URL,
+                    headers={"Authorization": f"Bearer {settings.EMBEDDING_API_KEY}"},
+                    json={"model": settings.EMBEDDING_MODEL, "input": text},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return data["data"][0]["embedding"]
+        except Exception:
+            logger.warning("API embedding failed, falling back to local", exc_info=True)
+            return await self._embed_local(text)
+
+    async def _embed_local(self, text: str) -> Optional[List[float]]:
+        """Local sentence-transformers embedding (requires [ml] extra)."""
+        model = self._get_local_model()
+        if model is None:
+            return None
         vec = model.encode(text, convert_to_numpy=True)
         return vec.tolist()
+
+    def _get_local_model(self):
+        if self._embed_model is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+                self._embed_model = SentenceTransformer("BAAI/bge-m3")
+            except ImportError:
+                logger.warning("sentence-transformers not installed — local embedding unavailable")
+                return None
+        return self._embed_model
 
     async def encode(self, text: str) -> Dict[str, float]:
         """Heuristic scoring on hot path. LLM upgrade happens via dreamer backfill."""
