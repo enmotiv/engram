@@ -38,6 +38,10 @@ class DefaultEncoder(Encoder):
         import httpx
         from engram.config import settings
 
+        if not settings.EMBEDDING_API_KEY:
+            logger.warning("EMBEDDING_API_KEY is empty — cannot call embedding API")
+            return await self._embed_local(text)
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
@@ -47,6 +51,9 @@ class DefaultEncoder(Encoder):
                 )
                 resp.raise_for_status()
                 data = resp.json()
+                if "data" not in data:
+                    logger.warning("Embedding API unexpected response: %s", str(data)[:300])
+                    return await self._embed_local(text)
                 return data["data"][0]["embedding"]
         except Exception:
             logger.warning("API embedding failed, falling back to local", exc_info=True)
