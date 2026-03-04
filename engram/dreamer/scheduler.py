@@ -55,32 +55,68 @@ async def _get_namespaces(db):
 async def run_decay(ctx):
     """Run edge decay on all namespaces."""
     async with ctx["session_factory"]() as db:
-        for ns in await _get_namespaces(db):
-            await _decay_job.execute(ns, db=db)
+        try:
+            namespaces = await _get_namespaces(db)
+        except Exception:
+            logger.warning("run_decay: failed to fetch namespaces", exc_info=True)
+            return
+        for ns in namespaces:
+            try:
+                async with db.begin_nested():
+                    await _decay_job.execute(ns, db=db)
+            except Exception:
+                logger.warning("Edge decay failed on %s", ns, exc_info=True)
         await db.commit()
 
 
 async def run_prune(ctx):
     """Run edge pruning on all namespaces."""
     async with ctx["session_factory"]() as db:
-        for ns in await _get_namespaces(db):
-            await _prune_job.execute(ns, db=db)
+        try:
+            namespaces = await _get_namespaces(db)
+        except Exception:
+            logger.warning("run_prune: failed to fetch namespaces", exc_info=True)
+            return
+        for ns in namespaces:
+            try:
+                async with db.begin_nested():
+                    await _prune_job.execute(ns, db=db)
+            except Exception:
+                logger.warning("Edge pruning failed on %s", ns, exc_info=True)
         await db.commit()
 
 
 async def run_consolidation(ctx):
     """Run memory consolidation on all namespaces."""
     async with ctx["session_factory"]() as db:
-        for ns in await _get_namespaces(db):
-            await _consolidation_job.execute(ns, db=db, registry=ctx["registry"])
+        try:
+            namespaces = await _get_namespaces(db)
+        except Exception:
+            logger.warning("run_consolidation: failed to fetch namespaces", exc_info=True)
+            return
+        for ns in namespaces:
+            try:
+                async with db.begin_nested():
+                    await _consolidation_job.execute(ns, db=db, registry=ctx["registry"])
+            except Exception:
+                logger.warning("Consolidation failed on %s", ns, exc_info=True)
         await db.commit()
 
 
 async def run_modulatory(ctx):
     """Run modulatory edge discovery on all namespaces."""
     async with ctx["session_factory"]() as db:
-        for ns in await _get_namespaces(db):
-            await _modulatory_job.execute(ns, db=db)
+        try:
+            namespaces = await _get_namespaces(db)
+        except Exception:
+            logger.warning("run_modulatory: failed to fetch namespaces", exc_info=True)
+            return
+        for ns in namespaces:
+            try:
+                async with db.begin_nested():
+                    await _modulatory_job.execute(ns, db=db)
+            except Exception:
+                logger.warning("Modulatory discovery failed on %s", ns, exc_info=True)
         await db.commit()
 
 
@@ -95,11 +131,17 @@ async def run_graph_generation(ctx):
         job = _graph_job
 
     async with ctx["session_factory"]() as db:
-        for ns in await _get_namespaces(db):
+        try:
+            namespaces = await _get_namespaces(db)
+        except Exception:
+            logger.warning("run_graph_generation: failed to fetch namespaces", exc_info=True)
+            return
+        for ns in namespaces:
             try:
-                if await job.should_run(ns, db=db):
-                    result = await job.execute(ns, db=db)
-                    logger.info("Graph generation on %s: %s", ns, result)
+                async with db.begin_nested():
+                    if await job.should_run(ns, db=db):
+                        result = await job.execute(ns, db=db)
+                        logger.info("Graph generation on %s: %s", ns, result)
             except Exception:
                 logger.warning("Graph generation failed on %s", ns, exc_info=True)
         await db.commit()
@@ -115,10 +157,11 @@ async def run_dimension_rescoring(ctx):
             return
         for ns in namespaces:
             try:
-                if await _rescoring_job.should_run(ns, db=db):
-                    result = await _rescoring_job.execute(ns, db=db)
-                    if result.get("rescored", 0) > 0:
-                        logger.info("Dimension rescoring on %s: %s", ns, result)
+                async with db.begin_nested():
+                    if await _rescoring_job.should_run(ns, db=db):
+                        result = await _rescoring_job.execute(ns, db=db)
+                        if result.get("rescored", 0) > 0:
+                            logger.info("Dimension rescoring on %s: %s", ns, result)
             except Exception:
                 logger.warning("Dimension rescoring failed on %s", ns, exc_info=True)
         await db.commit()
@@ -131,12 +174,18 @@ async def run_plugin_jobs(ctx):
         return
 
     async with ctx["session_factory"]() as db:
-        for ns in await _get_namespaces(db):
+        try:
+            namespaces = await _get_namespaces(db)
+        except Exception:
+            logger.warning("run_plugin_jobs: failed to fetch namespaces", exc_info=True)
+            return
+        for ns in namespaces:
             for job in registry.jobs:
                 try:
-                    if await job.should_run(ns, db=db):
-                        result = await job.execute(ns, db=db)
-                        logger.info("Plugin job %s on %s: %s", job.name(), ns, result)
+                    async with db.begin_nested():
+                        if await job.should_run(ns, db=db):
+                            result = await job.execute(ns, db=db)
+                            logger.info("Plugin job %s on %s: %s", job.name(), ns, result)
                 except Exception:
                     logger.warning(
                         "Plugin job %s failed on %s", job.name(), ns, exc_info=True
