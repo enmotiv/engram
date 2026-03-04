@@ -108,7 +108,12 @@ async def run_graph_generation(ctx):
 async def run_dimension_rescoring(ctx):
     """Backfill LLM dimension scores for memories with stale/heuristic scores."""
     async with ctx["session_factory"]() as db:
-        for ns in await _get_namespaces(db):
+        try:
+            namespaces = await _get_namespaces(db)
+        except Exception:
+            logger.warning("dimension_rescoring: failed to fetch namespaces", exc_info=True)
+            return
+        for ns in namespaces:
             try:
                 if await _rescoring_job.should_run(ns, db=db):
                     result = await _rescoring_job.execute(ns, db=db)
@@ -156,6 +161,7 @@ def _parse_redis_settings():
 
 class WorkerSettings:
     functions = [run_decay, run_prune, run_consolidation, run_modulatory, run_graph_generation, run_dimension_rescoring, run_plugin_jobs]
+    max_tries = 3
     cron_jobs = [
         cron(run_decay, hour=3, minute=0),        # Daily at 3:00 UTC
         cron(run_prune, hour=3, minute=30),        # Daily at 3:30 UTC
