@@ -6,6 +6,7 @@ Create Date: 2026-03-05
 """
 from typing import Sequence, Union
 
+import sqlalchemy as sa
 from alembic import op
 from pgvector.sqlalchemy import Vector
 
@@ -21,7 +22,7 @@ EMBEDDING_DIM = 1024
 def upgrade() -> None:
     for region in REGIONS:
         col_name = f"{region}_embedding"
-        op.add_column("memories", op.Column(col_name, Vector(EMBEDDING_DIM), nullable=True))
+        op.add_column("memories", sa.Column(col_name, Vector(EMBEDDING_DIM), nullable=True))
 
     # Create ivfflat indexes for each region column.
     # In production, run with CONCURRENTLY during low-traffic window.
