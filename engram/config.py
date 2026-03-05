@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str = ""  # Auto-set per provider if empty
     LLM_MODEL: str = ""
 
+    # Master integration flag — controls all Enmotiv integration intelligence
+    INTEGRATION_ENABLED: bool = True
+
+    # Amygdala asymmetry: high-amygdala memories get a retrieval score boost
+    AMYGDALA_ASYMMETRY_ENABLED: bool = True
+    AMYGDALA_ASYMMETRY_THRESHOLD: float = 0.75
+    AMYGDALA_ASYMMETRY_MULTIPLIER: float = 1.3
+
     model_config = {"env_prefix": "ENGRAM_", "env_file": ".env"}
 
     @property

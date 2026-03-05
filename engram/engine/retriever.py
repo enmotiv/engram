@@ -25,6 +25,7 @@ from engram.engine.models import (
 )
 from engram.engine.tracer import TraceGenerator
 from engram.engine.urgency import score_urgency
+from engram.config import settings
 from engram.plugins.registry import PluginRegistry
 
 logger = logging.getLogger(__name__)
@@ -339,6 +340,7 @@ class Retriever:
                         "content": match["content"],
                         "memory_type": match.get("memory_type", "episodic"),
                         "region_scores": {},
+                        "dimension_scores": match.get("dimension_scores", {}),
                     }
                 candidates[node_id]["region_scores"][region] = match["cosine_sim"]
 
@@ -360,6 +362,13 @@ class Retriever:
                 _CONVERGENCE_ALPHA * breadth_depth
                 + (1 - _CONVERGENCE_ALPHA) * max_score
             )
+
+            # Amygdala asymmetry: high-amygdala memories get a convergence boost
+            if settings.INTEGRATION_ENABLED and settings.AMYGDALA_ASYMMETRY_ENABLED:
+                dim_scores = cand.get("dimension_scores", {})
+                amyg_score = dim_scores.get("amygdala", dim_scores.get("amyg", 0.0))
+                if amyg_score >= settings.AMYGDALA_ASYMMETRY_THRESHOLD:
+                    convergence *= settings.AMYGDALA_ASYMMETRY_MULTIPLIER
 
             results.append(
                 MemoryResult(
@@ -385,6 +394,7 @@ class Retriever:
         vec_literal = "[" + ",".join(str(v) for v in region_vec) + "]"
         stmt = text(
             f"SELECT id, content, memory_type, "
+            f"features->'dimension_scores' AS dimension_scores, "
             f"1 - ({col_name} <=> '{vec_literal}'::vector) AS cosine_sim "
             f"FROM memories "
             f"WHERE namespace = :ns AND {col_name} IS NOT NULL "
@@ -398,6 +408,10 @@ class Retriever:
                 "id": str(r.id),
                 "content": r.content,
                 "memory_type": r.memory_type,
+                "dimension_scores": (
+                    r.dimension_scores if isinstance(r.dimension_scores, dict)
+                    else {}
+                ),
                 "cosine_sim": r.cosine_sim,
             }
             for r in rows
@@ -498,13 +512,22 @@ class Retriever:
 
                 source_activation = active[source_id].activation
 
+                # Self-loop edges: flat additive boost, not recursive
+                if source_id == target_id:
+                    active[source_id].activation += edge.weight
+                    traversed_edges.append({
+                        "source_memory_id": source_id,
+                        "target_memory_id": target_id,
+                        "edge_type": edge.edge_type,
+                        "weight": edge.weight,
+                        "context": edge.context or {},
+                    })
+                    continue
+
                 # Modulatory edges only fire if context overlaps
                 if edge.edge_type == "modulatory":
                     if not self._context_overlaps(edge.context_features, context):
                         continue
-
-                multiplier = _EDGE_MULTIPLIERS.get(edge.edge_type, 0.5)
-                delta = source_activation * edge.weight * multiplier
 
                 # Record edge for trace generation
                 traversed_edges.append({
@@ -514,6 +537,17 @@ class Retriever:
                     "weight": edge.weight,
                     "context": edge.context or {},
                 })
+
+                # Inhibitory edges: multiplicative suppression on target
+                if edge.edge_type == "inhibitory":
+                    if target_id in active:
+                        active[target_id].activation *= (1 - edge.weight)
+                    # Don't discover new nodes via inhibition
+                    continue
+
+                # Excitatory / associative / temporal / modulatory: additive delta
+                multiplier = _EDGE_MULTIPLIERS.get(edge.edge_type, 0.5)
+                delta = source_activation * edge.weight * multiplier
 
                 if target_id in active:
                     # Update existing node's activation
