@@ -15,6 +15,7 @@ from engram.api.schemas import (
     BatchEnrichResponse,
     CreateMemoryRequest,
     EdgeSummary,
+    EnhancedMemoryResponse,
     FullBatchRequest,
     FullBatchResponse,
     FullEdge,
@@ -102,27 +103,103 @@ async def batch_create(
 async def list_memories(
     namespace: str,
     memory_type: Optional[str] = None,
+    source_type: Optional[str] = None,
+    min_salience: Optional[float] = None,
+    sort: Optional[str] = Query(None, pattern="^(created_at|salience)$"),
+    include_edges: bool = False,
+    include_embeddings: bool = False,
     limit: int = 50,
+    offset: int = 0,
     store: MemoryStore = Depends(get_memory_store),
+    edge_store: EdgeStore = Depends(get_edge_store),
 ):
-    """List/filter memories by namespace and optional metadata filters."""
+    """List/filter memories by namespace with sorting and optional includes.
+
+    Query params:
+        namespace: Required namespace filter.
+        memory_type: Filter on Memory.memory_type column (episodic, semantic, etc.).
+        source_type: Filter on features['source_type'] (observation, entity, etc.).
+        min_salience: Only return memories with salience >= this value.
+        sort: Sort by 'created_at' (default, desc) or 'salience' (desc).
+        include_edges: Include edge list and count per memory.
+        include_embeddings: Include embedding vectors in response.
+        limit: Max results (default 50).
+        offset: Pagination offset.
+    """
     from sqlalchemy import select
     from engram.db.models import Memory
 
-    stmt = (
-        select(Memory)
-        .where(Memory.namespace == namespace)
-        .order_by(Memory.created_at.desc())
-        .limit(limit)
-    )
+    stmt = select(Memory).where(Memory.namespace == namespace)
+
+    # Filter on memory_type column
     if memory_type:
-        # Plugins store source type in features.source_type
+        stmt = stmt.where(Memory.memory_type == memory_type)
+
+    # Filter on features.source_type (backward compat with old 'memory_type' param usage)
+    if source_type:
         stmt = stmt.where(
-            Memory.features["source_type"].astext == memory_type
+            Memory.features["source_type"].astext == source_type
         )
+
+    # Salience floor
+    if min_salience is not None:
+        stmt = stmt.where(Memory.salience >= min_salience)
+
+    # Sorting
+    if sort == "salience":
+        stmt = stmt.order_by(Memory.salience.desc())
+    else:
+        stmt = stmt.order_by(Memory.created_at.desc())
+
+    stmt = stmt.offset(offset).limit(limit)
     result = await store.db.execute(stmt)
     memories = list(result.scalars().all())
-    return {"memories": [_memory_to_response(m) for m in memories]}
+
+    # Build edges map if requested
+    edges_by_memory: dict[str, list[dict]] = {}
+    if include_edges and memories:
+        found_ids = [m.id for m in memories]
+        edges = await edge_store.get_edges_batch(found_ids, direction="both")
+        for edge in edges:
+            src = str(edge.source_memory_id)
+            tgt = str(edge.target_memory_id)
+            edge_dict = {
+                "id": str(edge.id),
+                "source_memory_id": src,
+                "target_memory_id": tgt,
+                "edge_type": edge.edge_type,
+                "weight": edge.weight,
+            }
+            edges_by_memory.setdefault(src, []).append(edge_dict)
+            if tgt != src:
+                edges_by_memory.setdefault(tgt, []).append(edge_dict)
+
+    # Build response
+    items = []
+    for mem in memories:
+        mid = str(mem.id)
+        item = EnhancedMemoryResponse(
+            id=mid,
+            namespace=mem.namespace,
+            content=mem.content,
+            memory_type=mem.memory_type or "episodic",
+            dimension_scores=mem.dimension_scores or {},
+            features=mem.features or {},
+            metadata=mem.features or {},
+            activation=mem.activation or 0.0,
+            salience=mem.salience or 0.5,
+            access_count=mem.access_count or 0,
+            created_at=mem.created_at.isoformat() if mem.created_at else None,
+        )
+        if include_embeddings and mem.embedding is not None:
+            item.embedding = list(mem.embedding)
+        if include_edges:
+            mem_edges = edges_by_memory.get(mid, [])
+            item.edges = mem_edges
+            item.edge_count = len(mem_edges)
+        items.append(item)
+
+    return {"memories": [i.model_dump(exclude_none=True) for i in items]}
 
 
 @router.post("/memories/retrieve")
@@ -140,6 +217,7 @@ async def retrieve_memories(
         cue=req.cue,
         context=req.context,
         options=opts,
+        dimensional_cues=req.dimensional_cues,
     )
     return result.model_dump()
 

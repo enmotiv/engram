@@ -8,6 +8,7 @@ from arq.cron import cron
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from engram.config import settings
+from engram.dreamer.backfill_region_embeddings import BackfillRegionEmbeddingsJob
 from engram.dreamer.consolidation import ConsolidationJob
 from engram.dreamer.decay import EdgeDecayJob
 from engram.dreamer.dimension_rescoring import DimensionRescoringJob
@@ -24,6 +25,7 @@ _consolidation_job = ConsolidationJob()
 _modulatory_job = ModulatoryDiscoveryJob()
 _graph_job = GraphGenerationJob()
 _rescoring_job = DimensionRescoringJob()
+_backfill_regions_job = BackfillRegionEmbeddingsJob()
 
 
 async def startup(ctx):
@@ -167,6 +169,26 @@ async def run_dimension_rescoring(ctx):
         await db.commit()
 
 
+async def run_backfill_region_embeddings(ctx):
+    """Backfill per-region embeddings for existing memories."""
+    async with ctx["session_factory"]() as db:
+        try:
+            namespaces = await _get_namespaces(db)
+        except Exception:
+            logger.warning("backfill_region_embeddings: failed to fetch namespaces", exc_info=True)
+            return
+        for ns in namespaces:
+            try:
+                async with db.begin_nested():
+                    if await _backfill_regions_job.should_run(ns, db=db):
+                        result = await _backfill_regions_job.execute(ns, db=db)
+                        if result.get("backfilled", 0) > 0:
+                            logger.info("Region embedding backfill on %s: %s", ns, result)
+            except Exception:
+                logger.warning("Region embedding backfill failed on %s", ns, exc_info=True)
+        await db.commit()
+
+
 async def run_plugin_jobs(ctx):
     """Run all plugin-registered WorkerJobs on each namespace."""
     registry: PluginRegistry = ctx["registry"]
@@ -209,7 +231,7 @@ def _parse_redis_settings():
 
 
 class WorkerSettings:
-    functions = [run_decay, run_prune, run_consolidation, run_modulatory, run_graph_generation, run_dimension_rescoring, run_plugin_jobs]
+    functions = [run_decay, run_prune, run_consolidation, run_modulatory, run_graph_generation, run_dimension_rescoring, run_backfill_region_embeddings, run_plugin_jobs]
     max_tries = 3
     cron_jobs = [
         cron(run_decay, hour=3, minute=0),        # Daily at 3:00 UTC
@@ -218,6 +240,7 @@ class WorkerSettings:
         cron(run_modulatory, weekday=0, hour=4),    # Weekly: Monday 4:00 UTC
         cron(run_graph_generation, hour={1, 7, 13, 19}),  # Every 6 hours
         cron(run_dimension_rescoring, hour={0, 6, 12, 18}),  # Every 6 hours
+        cron(run_backfill_region_embeddings, hour={1, 7, 13, 19}, minute=30),  # Every 6h, offset from graphs
         cron(run_plugin_jobs, hour={2, 8, 14, 20}),  # Every 6 hours
     ]
     on_startup = startup

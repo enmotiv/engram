@@ -89,14 +89,15 @@ async def test_dimension_scores_present(client):
     })
     assert resp.status_code == 200
     data = resp.json()
-    # Brain regions plugin provides: hippocampus, amygdala, prefrontal_cortex, sensory_cortices, striatum
+    # Brain regions plugin provides: hippocampus, amygdala, prefrontal_cortex, sensory_cortices, striatum, cerebellum
     dim_scores = data.get("dimension_scores", {})
     assert "hippocampus" in dim_scores
     assert "amygdala" in dim_scores
     assert "prefrontal_cortex" in dim_scores
     assert "sensory_cortices" in dim_scores
     assert "striatum" in dim_scores
-    assert len(dim_scores) == 5
+    assert "cerebellum" in dim_scores
+    assert len(dim_scores) == 6
 
 
 # -- Checklist 2: 1024-dim BGE-M3 embeddings --

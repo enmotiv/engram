@@ -1,54 +1,37 @@
-"""Brain-region encoder — LLM-based scoring with heuristic fallback."""
+"""Brain-region encoder — LLM-based scoring with uniform fallback."""
 
 import json
 import logging
-import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from engram.engine.interfaces import Encoder
 from engram.engine.llm import get_llm_service
-from engram.plugins.brain_regions.prompts import BRAIN_REGION_PROMPT
+from engram.plugins.brain_regions.prompts import BRAIN_REGION_DECOMPOSE_PROMPT
 
 logger = logging.getLogger(__name__)
 
-_EMOTION_WORDS = frozenset({
-    "happy", "sad", "angry", "afraid", "terrified", "anxious", "excited", "frustrated",
-    "disappointed", "grateful", "nervous", "worried", "thrilled", "furious", "devastated",
-    "joyful", "miserable", "ecstatic", "overwhelmed", "relieved", "scared", "panic",
-    "love", "hate", "rage", "grief", "shame", "guilt", "pride", "jealous",
+# Canonical short region keys used by decompose() and multi-axis retrieval
+REQUIRED_REGIONS = frozenset({
+    "hippo", "amyg", "pfc", "sensory", "striatum", "cerebellum"
 })
 
-_SENSORY_WORDS = frozenset({
-    "red", "blue", "green", "bright", "dark", "loud", "quiet", "smooth", "rough",
-    "cold", "hot", "warm", "sharp", "soft", "sweet", "bitter", "sour", "light",
-    "glowing", "flickering", "buzzing", "humming", "scrolling", "flashing", "blinking",
-})
+# Map short region keys → long dimension names for backward compat with
+# dimension_scores stored in DB and convergence scoring
+_SHORT_TO_LONG = {
+    "hippo": "hippocampus",
+    "amyg": "amygdala",
+    "pfc": "prefrontal_cortex",
+    "sensory": "sensory_cortices",
+    "striatum": "striatum",
+    "cerebellum": "cerebellum",
+}
 
-_ACTION_VERBS = frozenset({
-    "run", "walk", "build", "fix", "deploy", "migrate", "push", "pull", "click",
-    "drag", "type", "write", "code", "test", "debug", "ship", "launch", "start",
-    "stop", "restart", "install", "configure", "execute", "trigger", "process",
-})
-
-_ABSTRACT_WORDS = frozenset({
-    "strategy", "architecture", "design", "pattern", "concept", "theory", "framework",
-    "principle", "goal", "objective", "plan", "decision", "analysis", "evaluation",
-    "hypothesis", "abstraction", "system", "process", "methodology", "approach",
-})
-
-_TEMPORAL_WORDS = frozenset({
-    "yesterday", "today", "tomorrow", "last", "next", "before", "after", "when",
-    "then", "first", "second", "finally", "recently", "previously", "initially",
-    "morning", "evening", "night", "week", "month", "year", "ago", "later",
-})
-
-BRAIN_REGION_KEYS = frozenset({
-    "hippocampus", "amygdala", "prefrontal_cortex", "sensory_cortices", "striatum"
-})
+# Uniform fallback scores (long keys) when LLM is unavailable
+_UNIFORM_SCORES = {long_name: 0.5 for long_name in _SHORT_TO_LONG.values()}
 
 
 class BrainRegionEncoder(Encoder):
-    """Scores text on 5 brain regions via LLM or heuristic fallback."""
+    """Scores text on 6 brain regions via LLM. Uniform 0.5 fallback on failure."""
 
     def __init__(self):
         self._embed_model = None  # lazy local model (only if EMBEDDING_PROVIDER=local)
@@ -105,41 +88,68 @@ class BrainRegionEncoder(Encoder):
         return self._embed_model
 
     async def encode(self, text: str) -> Dict[str, float]:
-        """Heuristic scoring on hot path. LLM upgrade happens via dreamer backfill."""
-        return self.heuristic_encode(text)
+        """Score text on each dimension. Returns {long_dim_name: 0.0-1.0}.
+
+        Uses LLM decomposition. Falls back to uniform 0.5 on failure.
+        """
+        try:
+            full = await self._llm_decompose(text)
+            return {_SHORT_TO_LONG[r]: full[r]["score"] for r in REQUIRED_REGIONS}
+        except Exception:
+            logger.warning("LLM encoding failed, returning uniform scores", exc_info=True)
+            return dict(_UNIFORM_SCORES)
 
     async def llm_encode(self, text: str) -> Dict[str, float]:
-        """LLM-based scoring — called by dreamer's DimensionRescoringJob, not inline."""
+        """LLM-based scoring — called by dreamer's DimensionRescoringJob.
+
+        Returns {long_dim_name: 0.0-1.0}. Raises on failure.
+        """
         llm = get_llm_service()
         if not llm.is_available():
             raise RuntimeError("LLM not available for dimension rescoring")
-        return await self._llm_encode(text)
+        full = await self._llm_decompose(text)
+        return {_SHORT_TO_LONG[r]: full[r]["score"] for r in REQUIRED_REGIONS}
 
-    async def _llm_encode(self, text: str) -> Dict[str, float]:
+    async def decompose(self, text: str) -> Dict[str, str]:
+        """Returns {short_region: text_string} for retrieval embedding.
+
+        Each string captures region-specific content from the input,
+        suitable for independent embedding and per-region pgvector search.
+        Returns empty dict on failure — caller falls back to single-embedding.
+        """
+        try:
+            full = await self._llm_decompose(text)
+            return {region: full[region]["text"] for region in REQUIRED_REGIONS}
+        except Exception:
+            logger.warning("Cue decomposition failed, returning empty", exc_info=True)
+            return {}
+
+    async def _llm_decompose(self, text: str) -> Dict[str, Dict[str, Any]]:
+        """Single LLM call returning both text strings and scores per region.
+
+        Raises ValueError on malformed output — callers catch and fall back.
+        Never returns partial results.
+        """
         llm = get_llm_service()
-        prompt = BRAIN_REGION_PROMPT.format(text=text)
-        raw = await llm.complete(prompt, max_tokens=200, temperature=0.1, json_mode=True)
+        prompt = BRAIN_REGION_DECOMPOSE_PROMPT.format(text=text)
+        raw = await llm.complete(prompt, max_tokens=400, temperature=0.1, json_mode=True)
 
-        scores = json.loads(raw)
-        if not BRAIN_REGION_KEYS.issubset(scores.keys()):
-            raise ValueError(f"Missing keys in LLM response: {scores.keys()}")
-        return {k: max(0.0, min(1.0, float(scores[k]))) for k in BRAIN_REGION_KEYS}
+        result = json.loads(raw)  # Raises JSONDecodeError if not valid JSON
 
-    def heuristic_encode(self, text: str) -> Dict[str, float]:
-        """Keyword-count heuristic fallback for each brain region."""
-        words = set(re.findall(r"\b\w+\b", text.lower()))
-        total = max(len(words), 1)
+        # Validate all 6 regions present
+        missing = REQUIRED_REGIONS - set(result.keys())
+        if missing:
+            raise ValueError(f"Missing regions in LLM response: {missing}")
 
-        hippocampus = min(len(words & _TEMPORAL_WORDS) / total * 8.0, 1.0)
-        amygdala = min(len(words & _EMOTION_WORDS) / total * 8.0, 1.0)
-        prefrontal = min(len(words & _ABSTRACT_WORDS) / total * 8.0, 1.0)
-        sensory = min(len(words & _SENSORY_WORDS) / total * 8.0, 1.0)
-        striatum = min(len(words & _ACTION_VERBS) / total * 8.0, 1.0)
+        # Validate each region has both text and score
+        for region in REQUIRED_REGIONS:
+            entry = result[region]
+            if not isinstance(entry, dict):
+                raise ValueError(f"Region '{region}' is not a dict: {type(entry)}")
+            if "text" not in entry or "score" not in entry:
+                raise ValueError(f"Region '{region}' missing text or score: {entry.keys()}")
+            if not isinstance(entry["text"], str) or not entry["text"].strip():
+                raise ValueError(f"Region '{region}' has empty/non-string text")
+            entry["score"] = max(0.0, min(1.0, float(entry["score"])))
 
-        return {
-            "hippocampus": round(hippocampus, 4),
-            "amygdala": round(amygdala, 4),
-            "prefrontal_cortex": round(prefrontal, 4),
-            "sensory_cortices": round(sensory, 4),
-            "striatum": round(striatum, 4),
-        }
+        return result

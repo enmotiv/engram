@@ -54,7 +54,7 @@ async def test_create_five_memories(store):
     for mem in mems:
         assert mem.embedding is not None
         assert len(list(mem.embedding)) == 1024
-        assert set(mem.dimension_scores.keys()) == {"hippocampus", "amygdala", "prefrontal_cortex", "sensory_cortices", "striatum"}
+        assert set(mem.dimension_scores.keys()) == {"hippocampus", "amygdala", "prefrontal_cortex", "sensory_cortices", "striatum", "cerebellum"}
 
 
 @pytest.mark.asyncio

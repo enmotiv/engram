@@ -29,6 +29,14 @@ class Encoder(ABC):
         """Produce a dense embedding vector for the text."""
         ...
 
+    async def decompose(self, text: str) -> Dict[str, str]:
+        """Decompose text into region-specific strings for multi-axis embedding.
+
+        Returns {region: text_string}. Default returns empty dict.
+        Override in plugins that support multi-axis decomposition.
+        """
+        return {}
+
 
 class WorkerJob(ABC):
     """A background job the Dreamer worker can execute."""

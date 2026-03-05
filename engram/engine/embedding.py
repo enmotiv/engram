@@ -37,3 +37,23 @@ class EmbeddingService:
         if len(self._score_cache) < self._max_cache:
             self._score_cache[key] = scores
         return scores
+
+    async def embed_text(self, text: str) -> Optional[List[float]]:
+        """Embed a single text string. Same as get_embedding but clearer name."""
+        return await self.get_embedding(text)
+
+    async def get_region_embeddings(self, text: str) -> Dict[str, List[float]]:
+        """Decompose text into 6 regions and embed each independently.
+
+        Returns {short_region: embedding_vector}. Empty dict if decomposition fails.
+        """
+        region_texts = await self._registry.encoder.decompose(text)
+        if not region_texts:
+            return {}
+
+        embeddings: Dict[str, List[float]] = {}
+        for region, region_text in region_texts.items():
+            vec = await self._registry.encoder.embed(region_text)
+            if vec is not None:
+                embeddings[region] = vec
+        return embeddings

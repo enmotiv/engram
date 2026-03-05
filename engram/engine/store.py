@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from engram.db.models import Memory
 from engram.engine.embedding import EmbeddingService
+from engram.engine.notifications import notify_namespace_changed
 from engram.plugins.registry import PluginRegistry
 
 
@@ -44,9 +45,16 @@ class MemoryStore:
             import uuid as _uuid
             kwargs["id"] = _uuid.UUID(memory_id)
 
+        # Populate per-region embeddings for multi-axis retrieval
+        region_embeddings = await self._embedding.get_region_embeddings(content)
+        for region, vec in region_embeddings.items():
+            col_name = f"{region}_embedding"
+            kwargs[col_name] = vec
+
         mem = Memory(**kwargs)
         self.db.add(mem)
         await self.db.flush()
+        await notify_namespace_changed(namespace)
         return mem
 
     async def get(self, memory_id: uuid.UUID) -> Optional[Memory]:
@@ -85,14 +93,17 @@ class MemoryStore:
             existing.update(features)
         mem.features = existing
         await self.db.flush()
+        await notify_namespace_changed(mem.namespace)
         return mem
 
     async def delete(self, memory_id: uuid.UUID) -> bool:
         mem = await self.db.get(Memory, memory_id)
         if mem is None:
             return False
+        namespace = mem.namespace
         await self.db.delete(mem)
         await self.db.flush()
+        await notify_namespace_changed(namespace)
         return True
 
     async def get_batch(self, memory_ids: List[uuid.UUID]) -> List[Memory]:
@@ -105,6 +116,7 @@ class MemoryStore:
 
     async def batch_create(self, memories: List[Dict]) -> List[Memory]:
         results = []
+        namespaces: set[str] = set()
         for item in memories:
             mem = await self.create(
                 namespace=item["namespace"],
@@ -113,4 +125,7 @@ class MemoryStore:
                 metadata=item.get("metadata"),
             )
             results.append(mem)
+            namespaces.add(item["namespace"])
+        # Deduplicated notifications (create already notifies per-item,
+        # but batch_create delegates to create which handles it)
         return results

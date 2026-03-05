@@ -1,4 +1,4 @@
-"""Brain-region dimension set — 5 dimensions mapping to neural subsystems."""
+"""Brain-region dimension set — 6 dimensions mapping to neural subsystems."""
 
 from typing import Dict, List
 
@@ -6,13 +6,14 @@ from engram.engine.interfaces import DimensionSet
 
 
 class BrainRegionDimensionSet(DimensionSet):
-    """Maps text to 5 brain-region dimensions.
+    """Maps text to 6 brain-region dimensions.
 
     hippocampus: episodic details, spatial context, temporal sequences, novelty
     amygdala: observed intensity, valence, sensitivity
     prefrontal_cortex: abstract concepts, goals, semantic meaning
     sensory_cortices: visual, auditory, specific sensory details
     striatum: action sequences, habits, reward patterns
+    cerebellum: procedural memory, repeated patterns, routine actions
     """
 
     def names(self) -> List[str]:
@@ -22,6 +23,7 @@ class BrainRegionDimensionSet(DimensionSet):
             "prefrontal_cortex",
             "sensory_cortices",
             "striatum",
+            "cerebellum",
         ]
 
     def default_weights(self) -> Dict[str, float]:
@@ -31,4 +33,5 @@ class BrainRegionDimensionSet(DimensionSet):
             "prefrontal_cortex": 1.0,
             "sensory_cortices": 0.6,
             "striatum": 0.7,
+            "cerebellum": 0.5,
         }

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from engram.db.models import VALID_EDGE_TYPES, Edge
 from engram.db.queries import NEIGHBORHOOD_CTE
+from engram.engine.notifications import notify_namespace_changed
 
 
 class EdgeStore:
@@ -55,6 +56,7 @@ class EdgeStore:
             )
             result2 = await self.db.execute(stmt2)
             row = result2.scalars().first()
+        await notify_namespace_changed(namespace)
         return row
 
     async def get_edges(
@@ -145,8 +147,10 @@ class EdgeStore:
         edge = await self.db.get(Edge, edge_id)
         if edge is None:
             return False
+        namespace = edge.namespace
         await self.db.delete(edge)
         await self.db.flush()
+        await notify_namespace_changed(namespace)
         return True
 
     async def update_weight(self, edge_id: uuid.UUID, new_weight: float) -> Optional[Edge]:
@@ -155,4 +159,5 @@ class EdgeStore:
             return None
         edge.weight = new_weight
         await self.db.flush()
+        await notify_namespace_changed(edge.namespace)
         return edge

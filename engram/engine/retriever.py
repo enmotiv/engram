@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
+from collections import defaultdict
 from typing import Dict, List, Optional
 
 from sqlalchemy import select, text
@@ -25,6 +27,7 @@ from engram.engine.tracer import TraceGenerator
 from engram.engine.urgency import score_urgency
 from engram.plugins.registry import PluginRegistry
 
+logger = logging.getLogger(__name__)
 
 # Edge-type propagation multipliers
 _EDGE_MULTIPLIERS = {
@@ -34,6 +37,15 @@ _EDGE_MULTIPLIERS = {
     "temporal": 0.5,
     "modulatory": 0.3,
 }
+
+# Brain regions for multi-axis search
+_REGIONS = ["hippo", "amyg", "pfc", "sensory", "striatum", "cerebellum"]
+
+# Convergence formula blending parameter.
+# alpha=1.0 → pure breadth*depth (dims_matched * mean_score)
+# alpha=0.0 → pure max_region_score (best single-axis match)
+# Default 0.7 balances breadth of match with peak match quality.
+_CONVERGENCE_ALPHA = 0.7
 
 
 class Retriever:
@@ -59,6 +71,7 @@ class Retriever:
         cue: str,
         context: Optional[dict] = None,
         options: Optional[RetrievalOptions] = None,
+        dimensional_cues: Optional[Dict[str, str]] = None,
     ) -> RetrievalResult:
         opts = options or RetrievalOptions()
         start = time.monotonic()
@@ -72,34 +85,45 @@ class Retriever:
                 retrieval_ms=round((time.monotonic() - start) * 1000, 2),
             )
 
-        # Step 1: Encode the cue
+        # Step 1: Encode the cue — semantic embedding + per-region decomposition
         cue_embedding = await self._embedding.get_embedding(cue)
-        cue_scores = await self._embedding.get_dimension_scores(cue)
+        region_vectors = await self._embedding.get_region_embeddings(cue)
 
-        if cue_embedding is None:
+        # Merge caller-provided dimensional cues (override LLM decomposition)
+        if dimensional_cues:
+            for region, text in dimensional_cues.items():
+                if region in _REGIONS and text.strip():
+                    vec = await self._embedding.embed_text(text)
+                    if vec is not None:
+                        region_vectors[region] = vec
+
+        if cue_embedding is None and not region_vectors:
             return RetrievalResult(
                 triggered=True,
                 urgency=urgency,
                 retrieval_ms=round((time.monotonic() - start) * 1000, 2),
             )
 
-        # Step 2: Vector search — pgvector cosine similarity
-        top_k = opts.max_results * 4  # oversample for convergence filtering
-        candidates = await self._vector_search(namespace, cue_embedding, top_k)
+        # Step 2: Multi-axis search (6 independent pgvector queries)
+        top_k = opts.max_results * 4
+        if region_vectors:
+            scored = await self._multi_axis_search(
+                namespace, region_vectors, cue_embedding, top_k
+            )
+        else:
+            # Fallback: single-embedding cosine search when decomposition fails
+            scored = await self._single_axis_fallback(namespace, cue_embedding, top_k)
 
-        # Step 3: Convergence scoring
-        scored = self._convergence_score(candidates, cue_scores)
-
-        # Step 4: Spreading activation through typed edges
+        # Step 3: Spreading activation through typed edges
         activated, suppressed, traversed_edges = await self._spread_activation(
             scored, namespace, opts.hop_depth, context
         )
 
-        # Step 5: Sort by activation and limit
+        # Step 4: Sort by activation and limit
         activated.sort(key=lambda m: m.activation, reverse=True)
         results = activated[: opts.max_results]
 
-        # Step 6: Generate trace
+        # Step 5: Generate trace
         trace = None
         if results and opts.trace_format == "graph":
             memory_ids = [m.id for m in results]
@@ -145,8 +169,8 @@ class Retriever:
     ) -> HeaderSearchResult:
         """Layer 0 header search — returns metadata without content.
 
-        Same pipeline as retrieve() (urgency → encode → vector search →
-        convergence → spreading activation) but the SQL selects NO content
+        Same pipeline as retrieve() (urgency -> encode -> vector search ->
+        convergence -> spreading activation) but the SQL selects NO content
         column. Returns MemoryHeaderResult objects for lightweight scanning.
         """
         start = time.monotonic()
@@ -235,7 +259,12 @@ class Retriever:
     def _score_headers(
         self, candidates: List[dict], cue_scores: Dict[str, float]
     ) -> List[MemoryHeaderResult]:
-        """Score header candidates on multi-dimension convergence."""
+        """Score header candidates on multi-dimension convergence.
+
+        Formula: convergence = dims_matched * avg_dim_score
+        Cosine similarity removed — with multi-axis search, per-region scores
+        replace the single cosine proxy.
+        """
         results = []
         for c in candidates:
             mem_scores = c["dimension_scores"]
@@ -252,8 +281,7 @@ class Retriever:
                     dim_count += 1
 
             avg_dim_score = dim_score_sum / dim_count if dim_count > 0 else 0.0
-            cosine_sim = c.get("cosine_sim", 0.0)
-            convergence = len(dims_matched) * avg_dim_score * cosine_sim
+            convergence = len(dims_matched) * avg_dim_score
 
             # Extract features JSONB fields
             features = c.get("features", {})
@@ -279,73 +307,134 @@ class Retriever:
             )
         return results
 
-    async def _vector_search(
-        self, namespace: str, cue_embedding: List[float], top_k: int
-    ) -> List[dict]:
-        """Cosine similarity search via pgvector."""
-        vec_literal = "[" + ",".join(str(v) for v in cue_embedding) + "]"
-        # asyncpg doesn't support :: casts in parameterized queries,
-        # so we embed the vector literal directly in the SQL string.
-        stmt = text(
-            f"SELECT id, content, memory_type, dimension_scores, activation, salience, "
-            f"1 - (embedding <=> '{vec_literal}'::vector) AS cosine_sim "
-            f"FROM memories "
-            f"WHERE namespace = :ns AND embedding IS NOT NULL "
-            f"ORDER BY embedding <=> '{vec_literal}'::vector "
-            f"LIMIT :k"
-        )
-        result = await self.db.execute(
-            stmt, {"ns": namespace, "k": top_k}
-        )
-        rows = result.fetchall()
-        return [
-            {
-                "id": str(r.id),
-                "content": r.content,
-                "memory_type": r.memory_type,
-                "dimension_scores": r.dimension_scores or {},
-                "activation": r.activation or 0.0,
-                "cosine_sim": r.cosine_sim,
-            }
-            for r in rows
-        ]
+    # -- Multi-axis search (6 independent pgvector queries) --
 
-    def _convergence_score(
-        self, candidates: List[dict], cue_scores: Dict[str, float]
+    async def _multi_axis_search(
+        self,
+        namespace: str,
+        region_vectors: Dict[str, List[float]],
+        cue_embedding: Optional[List[float]],
+        top_k: int,
     ) -> List[MemoryResult]:
-        """Score each candidate on multi-dimension convergence."""
+        """Run 6 independent pgvector queries and aggregate per-region scores.
+
+        Each region query returns the top-k most similar memories for that axis.
+        Candidates are merged. Convergence blends breadth*depth with peak score:
+
+            convergence = alpha * dims_matched * mean_score
+                        + (1 - alpha) * max_region_score
+
+        This prevents memories matching many regions weakly from outranking
+        memories matching fewer regions strongly.
+        """
+        candidates: Dict[str, dict] = {}
+
+        for region, vec in region_vectors.items():
+            matches = await self._region_search(namespace, vec, region, top_k=20)
+            for match in matches:
+                node_id = match["id"]
+                if node_id not in candidates:
+                    candidates[node_id] = {
+                        "id": node_id,
+                        "content": match["content"],
+                        "memory_type": match.get("memory_type", "episodic"),
+                        "region_scores": {},
+                    }
+                candidates[node_id]["region_scores"][region] = match["cosine_sim"]
+
+        # If no multi-axis results (all region columns NULL), fall back
+        if not candidates and cue_embedding is not None:
+            return await self._single_axis_fallback(namespace, cue_embedding, top_k)
+
+        # Compute convergence with alpha blending
         results = []
-        for c in candidates:
-            mem_scores = c["dimension_scores"]
-            dims_matched = []
-            dim_score_sum = 0.0
-            dim_count = 0
+        for cand in candidates.values():
+            region_scores = cand["region_scores"]
+            dims_matched = list(region_scores.keys())
+            scores = list(region_scores.values())
+            mean_score = sum(scores) / len(scores) if scores else 0.0
+            max_score = max(scores) if scores else 0.0
 
-            for dim, cue_val in cue_scores.items():
-                mem_val = mem_scores.get(dim, 0.0)
-                score = 1.0 - abs(mem_val - cue_val)
-                if score > 0.3:
-                    dims_matched.append(dim)
-                    dim_score_sum += score
-                    dim_count += 1
-
-            avg_dim_score = dim_score_sum / dim_count if dim_count > 0 else 0.0
-            cosine_sim = c.get("cosine_sim", 0.0)
-
-            # Convergence: dims_matched * avg_dimension_score * cosine_similarity
-            convergence = len(dims_matched) * avg_dim_score * cosine_sim
+            breadth_depth = len(dims_matched) * mean_score
+            convergence = (
+                _CONVERGENCE_ALPHA * breadth_depth
+                + (1 - _CONVERGENCE_ALPHA) * max_score
+            )
 
             results.append(
                 MemoryResult(
-                    id=c["id"],
-                    content=c["content"],
-                    activation=convergence,  # seed activation = convergence score
+                    id=cand["id"],
+                    content=cand["content"],
+                    activation=convergence,
                     dimensions_matched=dims_matched,
                     convergence_score=round(convergence, 4),
                     retrieval_path="direct",
                 )
             )
         return results
+
+    async def _region_search(
+        self,
+        namespace: str,
+        region_vec: List[float],
+        region: str,
+        top_k: int = 20,
+    ) -> List[dict]:
+        """Per-region pgvector cosine similarity search."""
+        col_name = f"{region}_embedding"
+        vec_literal = "[" + ",".join(str(v) for v in region_vec) + "]"
+        stmt = text(
+            f"SELECT id, content, memory_type, "
+            f"1 - ({col_name} <=> '{vec_literal}'::vector) AS cosine_sim "
+            f"FROM memories "
+            f"WHERE namespace = :ns AND {col_name} IS NOT NULL "
+            f"ORDER BY {col_name} <=> '{vec_literal}'::vector "
+            f"LIMIT :k"
+        )
+        result = await self.db.execute(stmt, {"ns": namespace, "k": top_k})
+        rows = result.fetchall()
+        return [
+            {
+                "id": str(r.id),
+                "content": r.content,
+                "memory_type": r.memory_type,
+                "cosine_sim": r.cosine_sim,
+            }
+            for r in rows
+        ]
+
+    # -- Fallback: single-embedding search --
+
+    async def _single_axis_fallback(
+        self, namespace: str, cue_embedding: List[float], top_k: int
+    ) -> List[MemoryResult]:
+        """Cosine-only fallback when region decomposition is unavailable.
+
+        Uses the single semantic embedding column. Convergence = cosine_sim only
+        (no dimension scoring — we don't trust heuristic scores).
+        """
+        vec_literal = "[" + ",".join(str(v) for v in cue_embedding) + "]"
+        stmt = text(
+            f"SELECT id, content, memory_type, "
+            f"1 - (embedding <=> '{vec_literal}'::vector) AS cosine_sim "
+            f"FROM memories "
+            f"WHERE namespace = :ns AND embedding IS NOT NULL "
+            f"ORDER BY embedding <=> '{vec_literal}'::vector "
+            f"LIMIT :k"
+        )
+        result = await self.db.execute(stmt, {"ns": namespace, "k": top_k})
+        rows = result.fetchall()
+        return [
+            MemoryResult(
+                id=str(r.id),
+                content=r.content,
+                activation=r.cosine_sim,
+                dimensions_matched=[],
+                convergence_score=round(r.cosine_sim, 4),
+                retrieval_path="direct",
+            )
+            for r in rows
+        ]
 
     async def _spread_activation(
         self,
@@ -361,7 +450,7 @@ class Retriever:
         if not seeds:
             return [], [], []
 
-        # Map memory_id → MemoryResult for all active nodes
+        # Map memory_id -> MemoryResult for all active nodes
         active: Dict[str, MemoryResult] = {m.id: m for m in seeds}
         suppressed: List[dict] = []
         traversed_edges: List[dict] = []

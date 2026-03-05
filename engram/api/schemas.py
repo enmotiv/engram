@@ -37,6 +37,25 @@ class MemoryResponse(BaseModel):
     created_at: Optional[str] = None
 
 
+class EnhancedMemoryResponse(BaseModel):
+    """Extended memory response with optional edges and embedding."""
+
+    id: str
+    namespace: str
+    content: str
+    memory_type: str
+    dimension_scores: Dict[str, float] = Field(default_factory=dict)
+    features: Optional[Dict] = Field(default_factory=dict)
+    metadata: Optional[Dict] = Field(default_factory=dict)
+    activation: float = 0.0
+    salience: float = 0.5
+    access_count: int = 0
+    created_at: Optional[str] = None
+    embedding: Optional[List[float]] = None
+    edges: Optional[List[dict]] = None
+    edge_count: Optional[int] = None
+
+
 class UpdateMemoryRequest(BaseModel):
     metadata: Optional[dict] = None
     features: Optional[dict] = None
@@ -49,6 +68,7 @@ class RetrieveRequest(BaseModel):
     max_results: int = 5
     urgency_threshold: float = 0.3
     hop_depth: int = 2
+    dimensional_cues: Optional[Dict[str, str]] = None
 
 
 # --- Header search / resolve / batch-enrich schemas ---

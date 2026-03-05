@@ -4,13 +4,14 @@ import pytest
 
 from engram.plugins.registry import PluginRegistry
 
-BRAIN_REGION_DIMS = {"hippocampus", "amygdala", "prefrontal_cortex", "sensory_cortices", "striatum"}
+BRAIN_REGION_DIMS = {"hippocampus", "amygdala", "prefrontal_cortex", "sensory_cortices", "striatum", "cerebellum"}
 BRAIN_REGION_WEIGHTS = {
     "hippocampus": 0.9,
     "amygdala": 0.8,
     "prefrontal_cortex": 1.0,
     "sensory_cortices": 0.6,
     "striatum": 0.7,
+    "cerebellum": 0.5,
 }
 
 
@@ -42,7 +43,7 @@ def test_brain_region_weights(registry):
 
 
 @pytest.mark.asyncio
-async def test_encode_returns_5_brain_region_scores(registry):
+async def test_encode_returns_6_brain_region_scores(registry):
     scores = await registry.encoder.encode(
         "We migrated the database to AWS last Tuesday"
     )
