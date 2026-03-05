@@ -393,8 +393,7 @@ class Retriever:
         col_name = f"{region}_embedding"
         vec_literal = "[" + ",".join(str(v) for v in region_vec) + "]"
         stmt = text(
-            f"SELECT id, content, memory_type, "
-            f"features->'dimension_scores' AS dimension_scores, "
+            f"SELECT id, content, memory_type, dimension_scores, "
             f"1 - ({col_name} <=> '{vec_literal}'::vector) AS cosine_sim "
             f"FROM memories "
             f"WHERE namespace = :ns AND {col_name} IS NOT NULL "
