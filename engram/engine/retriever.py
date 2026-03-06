@@ -48,6 +48,15 @@ _REGIONS = ["hippo", "amyg", "pfc", "sensory", "striatum", "cerebellum"]
 # Default 0.7 balances breadth of match with peak match quality.
 _CONVERGENCE_ALPHA = 0.7
 
+# Maximum possible convergence from _multi_axis_search:
+#   alpha * 6_regions * 1.0_cosine + (1-alpha) * 1.0_max = 4.5
+# Used to normalize convergence_score to [0, 1].
+_MAX_MULTI_AXIS_CONVERGENCE = _CONVERGENCE_ALPHA * 6 + (1 - _CONVERGENCE_ALPHA)
+
+# Maximum possible convergence from _score_headers:
+#   6_dims * 1.0_perfect_score = 6.0
+_MAX_HEADER_CONVERGENCE = 6.0
+
 
 class Retriever:
     """Multi-axis retrieval with convergence scoring and spreading activation."""
@@ -287,12 +296,14 @@ class Retriever:
             # Extract features JSONB fields
             features = c.get("features", {})
 
+            normalized = min(convergence / _MAX_HEADER_CONVERGENCE, 1.0) if convergence > 0 else 0.0
+
             results.append(
                 MemoryHeaderResult(
                     id=c["id"],
                     memory_type=c.get("memory_type", "episodic"),
                     activation=convergence,
-                    convergence_score=round(convergence, 4),
+                    convergence_score=round(normalized, 4),
                     retrieval_path="direct",
                     dimensions_matched=dims_matched,
                     enrichment_status=features.get("enrichment_status", "raw"),
@@ -370,13 +381,17 @@ class Retriever:
                 if amyg_score >= settings.AMYGDALA_ASYMMETRY_THRESHOLD:
                     convergence *= settings.AMYGDALA_ASYMMETRY_MULTIPLIER
 
+            # Normalize convergence_score to [0, 1] for external consumers.
+            # activation stays unnormalized — spreading activation needs raw values.
+            normalized = min(convergence / _MAX_MULTI_AXIS_CONVERGENCE, 1.0)
+
             results.append(
                 MemoryResult(
                     id=cand["id"],
                     content=cand["content"],
                     activation=convergence,
                     dimensions_matched=dims_matched,
-                    convergence_score=round(convergence, 4),
+                    convergence_score=round(normalized, 4),
                     retrieval_path="direct",
                 )
             )
