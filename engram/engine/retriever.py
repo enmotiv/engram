@@ -116,13 +116,18 @@ class Retriever:
 
         # Step 2: Multi-axis search (6 independent pgvector queries)
         top_k = opts.max_results * 4
+        exclude_types = opts.exclude_types
         if region_vectors:
             scored = await self._multi_axis_search(
-                namespace, region_vectors, cue_embedding, top_k
+                namespace, region_vectors, cue_embedding, top_k,
+                exclude_types=exclude_types,
             )
         else:
             # Fallback: single-embedding cosine search when decomposition fails
-            scored = await self._single_axis_fallback(namespace, cue_embedding, top_k)
+            scored = await self._single_axis_fallback(
+                namespace, cue_embedding, top_k,
+                exclude_types=exclude_types,
+            )
 
         # Step 3: Spreading activation through typed edges
         activated, suppressed, traversed_edges = await self._spread_activation(
@@ -327,6 +332,7 @@ class Retriever:
         region_vectors: Dict[str, List[float]],
         cue_embedding: Optional[List[float]],
         top_k: int,
+        exclude_types: Optional[List[str]] = None,
     ) -> List[MemoryResult]:
         """Run 6 independent pgvector queries and aggregate per-region scores.
 
@@ -356,9 +362,18 @@ class Retriever:
                     }
                 candidates[node_id]["region_scores"][region] = match["cosine_sim"]
 
+        # Filter excluded types before scoring
+        if exclude_types:
+            candidates = {
+                k: v for k, v in candidates.items()
+                if v.get("memory_type") not in exclude_types
+            }
+
         # If no multi-axis results (all region columns NULL), fall back
         if not candidates and cue_embedding is not None:
-            return await self._single_axis_fallback(namespace, cue_embedding, top_k)
+            return await self._single_axis_fallback(
+                namespace, cue_embedding, top_k, exclude_types=exclude_types,
+            )
 
         # Compute convergence with alpha blending
         results = []
@@ -440,7 +455,8 @@ class Retriever:
     # -- Fallback: single-embedding search --
 
     async def _single_axis_fallback(
-        self, namespace: str, cue_embedding: List[float], top_k: int
+        self, namespace: str, cue_embedding: List[float], top_k: int,
+        exclude_types: Optional[List[str]] = None,
     ) -> List[MemoryResult]:
         """Cosine-only fallback when region decomposition is unavailable.
 
@@ -458,6 +474,11 @@ class Retriever:
         )
         result = await self.db.execute(stmt, {"ns": namespace, "k": top_k})
         rows = result.fetchall()
+
+        # Filter excluded types after collection
+        if exclude_types:
+            rows = [r for r in rows if r.memory_type not in exclude_types]
+
         return [
             MemoryResult(
                 id=str(r.id),

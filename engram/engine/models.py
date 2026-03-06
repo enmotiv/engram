@@ -11,6 +11,7 @@ class RetrievalOptions(BaseModel):
     hop_depth: int = 2
     trace_format: str = "graph"
     reconsolidate: bool = True
+    exclude_types: Optional[List[str]] = None
 
 
 class MemoryResult(BaseModel):

@@ -69,6 +69,14 @@ class RetrieveRequest(BaseModel):
     urgency_threshold: float = 0.3
     hop_depth: int = 2
     dimensional_cues: Optional[Dict[str, str]] = None
+    exclude_types: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Memory types to exclude from results. "
+            "Applied after collection, before scoring. "
+            "Default: None (include all types)."
+        ),
+    )
 
 
 # --- Header search / resolve / batch-enrich schemas ---
