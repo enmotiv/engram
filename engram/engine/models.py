@@ -1,6 +1,6 @@
 """Pydantic models for retrieval pipeline."""
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -20,6 +20,8 @@ class MemoryResult(BaseModel):
     dimensions_matched: List[str] = Field(default_factory=list)
     convergence_score: float = 0.0
     retrieval_path: str = "direct"  # "direct" or "spreading"
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    dimension_scores: Dict[str, float] = Field(default_factory=dict)
 
 
 class RetrievalResult(BaseModel):

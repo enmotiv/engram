@@ -352,6 +352,7 @@ class Retriever:
                         "memory_type": match.get("memory_type", "episodic"),
                         "region_scores": {},
                         "dimension_scores": match.get("dimension_scores", {}),
+                        "features": match.get("features", {}),
                     }
                 candidates[node_id]["region_scores"][region] = match["cosine_sim"]
 
@@ -393,6 +394,8 @@ class Retriever:
                     dimensions_matched=dims_matched,
                     convergence_score=round(normalized, 4),
                     retrieval_path="direct",
+                    metadata=cand.get("features", {}),
+                    dimension_scores=cand.get("dimension_scores", {}),
                 )
             )
         return results
@@ -408,7 +411,7 @@ class Retriever:
         col_name = f"{region}_embedding"
         vec_literal = "[" + ",".join(str(v) for v in region_vec) + "]"
         stmt = text(
-            f"SELECT id, content, memory_type, dimension_scores, "
+            f"SELECT id, content, memory_type, dimension_scores, features, "
             f"1 - ({col_name} <=> '{vec_literal}'::vector) AS cosine_sim "
             f"FROM memories "
             f"WHERE namespace = :ns AND {col_name} IS NOT NULL "
@@ -425,6 +428,9 @@ class Retriever:
                 "dimension_scores": (
                     r.dimension_scores if isinstance(r.dimension_scores, dict)
                     else {}
+                ),
+                "features": (
+                    r.features if isinstance(r.features, dict) else {}
                 ),
                 "cosine_sim": r.cosine_sim,
             }
@@ -443,7 +449,7 @@ class Retriever:
         """
         vec_literal = "[" + ",".join(str(v) for v in cue_embedding) + "]"
         stmt = text(
-            f"SELECT id, content, memory_type, "
+            f"SELECT id, content, memory_type, features, "
             f"1 - (embedding <=> '{vec_literal}'::vector) AS cosine_sim "
             f"FROM memories "
             f"WHERE namespace = :ns AND embedding IS NOT NULL "
@@ -460,6 +466,7 @@ class Retriever:
                 dimensions_matched=[],
                 convergence_score=round(r.cosine_sim, 4),
                 retrieval_path="direct",
+                metadata=r.features if isinstance(r.features, dict) else {},
             )
             for r in rows
         ]
@@ -578,6 +585,8 @@ class Retriever:
                         dimensions_matched=[],
                         convergence_score=0.0,
                         retrieval_path="spreading",
+                        metadata=mem.features if isinstance(mem.features, dict) else {},
+                        dimension_scores=mem.dimension_scores if isinstance(mem.dimension_scores, dict) else {},
                     )
 
         # Filter: remove memories with activation <= 0 (inhibited out)
