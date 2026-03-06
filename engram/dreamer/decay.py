@@ -83,6 +83,17 @@ class EdgeDecayJob(WorkerJob):
                 recency = 0.1  # never accessed — low but not zero
 
             mem.activation = round(edge_strength * recency, 4)
+
+            # Enforce decay floor if set (e.g. entity nodes protected by plugins)
+            floor = None
+            if mem.features and isinstance(mem.features, dict):
+                floor = mem.features.get("decay_floor")
+            if floor is not None:
+                try:
+                    mem.activation = max(mem.activation, float(floor))
+                except (TypeError, ValueError):
+                    pass  # malformed floor — ignore
+
             updated += 1
 
         return updated
