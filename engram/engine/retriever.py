@@ -48,11 +48,6 @@ _REGIONS = ["hippo", "amyg", "pfc", "sensory", "striatum", "cerebellum"]
 # Default 0.7 balances breadth of match with peak match quality.
 _CONVERGENCE_ALPHA = 0.7
 
-# Maximum possible convergence from _multi_axis_search:
-#   alpha * 6_regions * 1.0_cosine + (1-alpha) * 1.0_max = 4.5
-# Used to normalize convergence_score to [0, 1].
-_MAX_MULTI_AXIS_CONVERGENCE = _CONVERGENCE_ALPHA * 6 + (1 - _CONVERGENCE_ALPHA)
-
 # Maximum possible convergence from _score_headers:
 #   6_dims * 1.0_perfect_score = 6.0
 _MAX_HEADER_CONVERGENCE = 6.0
@@ -117,10 +112,15 @@ class Retriever:
         # Step 2: Multi-axis search (6 independent pgvector queries)
         top_k = opts.max_results * 4
         exclude_types = opts.exclude_types
+        effective_weights = {
+            region: (opts.axis_weights or {}).get(region, 1.0)
+            for region in _REGIONS
+        }
         if region_vectors:
             scored = await self._multi_axis_search(
                 namespace, region_vectors, cue_embedding, top_k,
                 exclude_types=exclude_types,
+                effective_weights=effective_weights,
             )
         else:
             # Fallback: single-embedding cosine search when decomposition fails
@@ -166,6 +166,7 @@ class Retriever:
             suppressed=suppressed,
             trace=trace,
             retrieval_ms=elapsed,
+            axis_weights_applied=effective_weights,
         )
 
         # Reconsolidation (Hebbian learning)
@@ -333,6 +334,7 @@ class Retriever:
         cue_embedding: Optional[List[float]],
         top_k: int,
         exclude_types: Optional[List[str]] = None,
+        effective_weights: Optional[Dict[str, float]] = None,
     ) -> List[MemoryResult]:
         """Run 6 independent pgvector queries and aggregate per-region scores.
 
@@ -375,12 +377,21 @@ class Retriever:
                 namespace, cue_embedding, top_k, exclude_types=exclude_types,
             )
 
-        # Compute convergence with alpha blending
+        # Compute convergence with alpha blending and axis weights
+        _ew = effective_weights or {r: 1.0 for r in _REGIONS}
+        max_weight = max(_ew.values()) if _ew else 1.0
+
         results = []
         for cand in candidates.values():
             region_scores = cand["region_scores"]
             dims_matched = list(region_scores.keys())
-            scores = list(region_scores.values())
+
+            # Apply axis weights to region scores
+            weighted_scores = {
+                region: score * _ew.get(region, 1.0)
+                for region, score in region_scores.items()
+            }
+            scores = list(weighted_scores.values())
             mean_score = sum(scores) / len(scores) if scores else 0.0
             max_score = max(scores) if scores else 0.0
 
@@ -397,9 +408,14 @@ class Retriever:
                 if amyg_score >= settings.AMYGDALA_ASYMMETRY_THRESHOLD:
                     convergence *= settings.AMYGDALA_ASYMMETRY_MULTIPLIER
 
-            # Normalize convergence_score to [0, 1] for external consumers.
+            # Dynamic normalization accounting for axis weights and matched axes.
             # activation stays unnormalized — spreading activation needs raw values.
-            normalized = min(convergence / _MAX_MULTI_AXIS_CONVERGENCE, 1.0)
+            n_axes = len(region_scores)
+            dynamic_max = (
+                _CONVERGENCE_ALPHA * (n_axes * max_weight)
+                + (1 - _CONVERGENCE_ALPHA) * max_weight
+            )
+            normalized = min(convergence / dynamic_max, 1.0) if dynamic_max > 0 else 0.0
 
             results.append(
                 MemoryResult(

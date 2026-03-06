@@ -12,6 +12,7 @@ class RetrievalOptions(BaseModel):
     trace_format: str = "graph"
     reconsolidate: bool = True
     exclude_types: Optional[List[str]] = None
+    axis_weights: Optional[Dict[str, float]] = None
 
 
 class MemoryResult(BaseModel):
@@ -32,6 +33,7 @@ class RetrievalResult(BaseModel):
     suppressed: List[dict] = Field(default_factory=list)
     trace: Optional[str] = None
     retrieval_ms: float = 0.0
+    axis_weights_applied: Dict[str, float] = Field(default_factory=dict)
 
 
 class MemoryHeaderResult(BaseModel):

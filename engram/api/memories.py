@@ -212,6 +212,7 @@ async def retrieve_memories(
         urgency_threshold=req.urgency_threshold,
         hop_depth=req.hop_depth,
         exclude_types=req.exclude_types,
+        axis_weights=req.axis_weights,
     )
     result = await retriever.retrieve(
         namespace=req.namespace,

@@ -77,6 +77,15 @@ class RetrieveRequest(BaseModel):
             "Default: None (include all types)."
         ),
     )
+    axis_weights: Optional[Dict[str, float]] = Field(
+        default=None,
+        description=(
+            "Per-axis convergence weight multipliers. "
+            "Keys: hippo, amyg, pfc, sensory, striatum, cerebellum. "
+            "Missing keys default to 1.0. Range: [0.1, 3.0]. "
+            "Driven by capacity state. NOT derived from relational dimension scores."
+        ),
+    )
 
 
 # --- Header search / resolve / batch-enrich schemas ---
