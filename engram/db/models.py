@@ -40,6 +40,10 @@ class Memory(Base):
     dimension_scores = Column(JSONB, default=dict)
     features = Column(JSONB, default=dict)
     feature_vector = Column(Vector(32))
+    # Node vitals — updated by different systems:
+    # activation: recomputed by dreamer EdgeDecayJob each cycle (edge_strength × recency)
+    # salience: set at write time from mean axis scores; updated by AxisRescoringJob
+    # access_count, last_accessed: updated by reconsolidation on every retrieval
     activation = Column(Float, default=0.0)
     salience = Column(Float, default=0.5)
     access_count = Column(Integer, default=0)

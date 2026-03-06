@@ -33,12 +33,18 @@ class MemoryStore:
         embedding = await self._embedding.get_embedding(content)
         dimension_scores = await self._embedding.get_dimension_scores(content)
 
+        # Salience: mean activation across all brain regions at encoding time.
+        # Higher = more strongly encoded across multiple regions.
+        _scores = list(dimension_scores.values())
+        salience = sum(_scores) / len(_scores) if _scores else 0.5
+
         kwargs: Dict = dict(
             namespace=namespace,
             content=content,
             memory_type=memory_type,
             embedding=embedding,
             dimension_scores=dimension_scores,
+            salience=salience,
             features=metadata or {},
         )
         if memory_id:

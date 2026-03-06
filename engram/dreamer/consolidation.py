@@ -42,20 +42,9 @@ class ConsolidationJob(WorkerJob):
         memories = list(result.scalars().all())
 
         if len(memories) < 3:
-            return {"clusters_found": 0, "summaries_created": 0, "memories_preserved": 0}
+            return {"clusters_found": 0, "summaries_created": 0}
 
-        # Filter out high-amygdala memories (emotional — resist consolidation)
-        preserved = 0
-        consolidatable = []
-        for mem in memories:
-            scores = mem.dimension_scores or {}
-            if scores.get("amygdala", 0.0) > 0.7:
-                preserved += 1
-            else:
-                consolidatable.append(mem)
-
-        if len(consolidatable) < 3:
-            return {"clusters_found": 0, "summaries_created": 0, "memories_preserved": preserved}
+        consolidatable = memories
 
         # Find clusters via pairwise cosine similarity > 0.85
         clusters = await self._find_clusters(db, namespace, consolidatable)
@@ -91,7 +80,6 @@ class ConsolidationJob(WorkerJob):
         return {
             "clusters_found": len(clusters),
             "summaries_created": summaries_created,
-            "memories_preserved": preserved,
         }
 
     async def _find_clusters(

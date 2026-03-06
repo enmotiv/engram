@@ -11,7 +11,8 @@ from engram.config import settings
 from engram.dreamer.backfill_region_embeddings import BackfillRegionEmbeddingsJob
 from engram.dreamer.consolidation import ConsolidationJob
 from engram.dreamer.decay import EdgeDecayJob
-from engram.dreamer.dimension_rescoring import DimensionRescoringJob
+from engram.dreamer.axis_rescoring import AxisRescoringJob
+from engram.dreamer.feature_extraction import FeatureExtractionJob
 from engram.dreamer.graph_generation import GraphGenerationJob
 from engram.dreamer.modulatory import ModulatoryDiscoveryJob
 from engram.dreamer.prune import EdgePruneJob
@@ -24,8 +25,9 @@ _prune_job = EdgePruneJob()
 _consolidation_job = ConsolidationJob()
 _modulatory_job = ModulatoryDiscoveryJob()
 _graph_job = GraphGenerationJob()
-_rescoring_job = DimensionRescoringJob()
+_rescoring_job = AxisRescoringJob()
 _backfill_regions_job = BackfillRegionEmbeddingsJob()
+_feature_extraction_job = FeatureExtractionJob()
 
 
 async def startup(ctx):
@@ -149,13 +151,13 @@ async def run_graph_generation(ctx):
         await db.commit()
 
 
-async def run_dimension_rescoring(ctx):
-    """Backfill LLM dimension scores for memories with stale/heuristic scores."""
+async def run_axis_rescoring(ctx):
+    """Backfill LLM axis scores for memories with stale/heuristic scores."""
     async with ctx["session_factory"]() as db:
         try:
             namespaces = await _get_namespaces(db)
         except Exception:
-            logger.warning("dimension_rescoring: failed to fetch namespaces", exc_info=True)
+            logger.warning("axis_rescoring: failed to fetch namespaces", exc_info=True)
             return
         for ns in namespaces:
             try:
@@ -163,9 +165,9 @@ async def run_dimension_rescoring(ctx):
                     if await _rescoring_job.should_run(ns, db=db):
                         result = await _rescoring_job.execute(ns, db=db)
                         if result.get("rescored", 0) > 0:
-                            logger.info("Dimension rescoring on %s: %s", ns, result)
+                            logger.info("Axis rescoring on %s: %s", ns, result)
             except Exception:
-                logger.warning("Dimension rescoring failed on %s", ns, exc_info=True)
+                logger.warning("Axis rescoring failed on %s", ns, exc_info=True)
         await db.commit()
 
 
@@ -186,6 +188,31 @@ async def run_backfill_region_embeddings(ctx):
                             logger.info("Region embedding backfill on %s: %s", ns, result)
             except Exception:
                 logger.warning("Region embedding backfill failed on %s", ns, exc_info=True)
+        await db.commit()
+
+
+async def run_feature_extraction(ctx):
+    """Backfill structural feature vectors for memories missing them.
+
+    NOTE: The current feature vocabulary is professional/technical and does not
+    map well to personal behavioral memory content. Feature vectors produced here
+    will be low quality until the vocabulary is replaced. Modulatory discovery
+    downstream will reflect this. See DESIGN_NOTE_MODULATORY_VOCABULARY.md.
+    """
+    async with ctx["session_factory"]() as db:
+        try:
+            namespaces = await _get_namespaces(db)
+        except Exception:
+            logger.warning("run_feature_extraction: failed to fetch namespaces", exc_info=True)
+            return
+        for ns in namespaces:
+            try:
+                async with db.begin_nested():
+                    result = await _feature_extraction_job.execute(ns, db=db)
+                    if result.get("processed", 0) > 0:
+                        logger.info("Feature extraction on %s: %s", ns, result)
+            except Exception:
+                logger.warning("Feature extraction failed on %s", ns, exc_info=True)
         await db.commit()
 
 
@@ -231,7 +258,7 @@ def _parse_redis_settings():
 
 
 class WorkerSettings:
-    functions = [run_decay, run_prune, run_consolidation, run_modulatory, run_graph_generation, run_dimension_rescoring, run_backfill_region_embeddings, run_plugin_jobs]
+    functions = [run_decay, run_prune, run_consolidation, run_modulatory, run_graph_generation, run_axis_rescoring, run_backfill_region_embeddings, run_feature_extraction, run_plugin_jobs]
     max_tries = 3
     cron_jobs = [
         cron(run_decay, hour=3, minute=0),        # Daily at 3:00 UTC
@@ -239,8 +266,9 @@ class WorkerSettings:
         cron(run_consolidation, minute=45),         # Hourly at :45
         cron(run_modulatory, weekday=0, hour=4),    # Weekly: Monday 4:00 UTC
         cron(run_graph_generation, hour={1, 7, 13, 19}),  # Every 6 hours
-        cron(run_dimension_rescoring, hour={0, 6, 12, 18}),  # Every 6 hours
+        cron(run_axis_rescoring, hour={0, 6, 12, 18}),  # Every 6 hours
         cron(run_backfill_region_embeddings, hour={1, 7, 13, 19}, minute=30),  # Every 6h, offset from graphs
+        cron(run_feature_extraction, hour={2, 8, 14, 20}, minute=15),  # Every 6h — placeholder vocab, see design note
         cron(run_plugin_jobs, hour={2, 8, 14, 20}),  # Every 6 hours
     ]
     on_startup = startup

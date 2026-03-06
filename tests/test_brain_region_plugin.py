@@ -89,7 +89,7 @@ async def test_encode_uniform_fallback_when_llm_unavailable(registry):
 
 @pytest.mark.asyncio
 async def test_llm_encode_returns_scores(registry):
-    """llm_encode() returns {long_key: float} for DimensionRescoringJob."""
+    """llm_encode() returns {long_key: float} for AxisRescoringJob."""
     mock_llm = MagicMock()
     mock_llm.is_available.return_value = True
     mock_llm.complete = AsyncMock(return_value=MOCK_LLM_RESPONSE)

@@ -1,4 +1,4 @@
-"""Dimension rescoring job — backfill LLM dimension scores for existing memories."""
+"""Axis rescoring job — backfill LLM brain-region scores for existing memories."""
 
 from __future__ import annotations
 
@@ -40,15 +40,15 @@ def _scores_diverge(old: Dict[str, float], new: Dict[str, float]) -> bool:
     return False
 
 
-class DimensionRescoringJob(WorkerJob):
-    """Backfill LLM-based dimension scores for memories with stale/heuristic scores.
+class AxisRescoringJob(WorkerJob):
+    """Backfill LLM-based axis scores for memories with stale/heuristic scores.
 
     Runs in batches, compares old vs new, only updates when scores meaningfully
     diverge. Tracks scoring version in features metadata.
     """
 
     def name(self) -> str:
-        return "dimension_rescoring"
+        return "axis_rescoring"
 
     async def should_run(self, namespace: str, **kwargs) -> bool:
         llm = get_llm_service()
@@ -93,6 +93,9 @@ class DimensionRescoringJob(WorkerJob):
 
             if _scores_diverge(old_scores, new_scores):
                 mem.dimension_scores = new_scores
+                # Recalculate salience from updated scores
+                new_score_vals = list(new_scores.values())
+                mem.salience = sum(new_score_vals) / len(new_score_vals) if new_score_vals else 0.5
                 features = dict(mem.features or {})
                 features["_scoring_version"] = SCORING_VERSION
                 features["_prev_dimension_scores"] = old_scores

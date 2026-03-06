@@ -25,7 +25,6 @@ from engram.engine.models import (
 )
 from engram.engine.tracer import TraceGenerator
 from engram.engine.urgency import score_urgency
-from engram.config import settings
 from engram.plugins.registry import PluginRegistry
 
 logger = logging.getLogger(__name__)
@@ -401,13 +400,6 @@ class Retriever:
                 + (1 - _CONVERGENCE_ALPHA) * max_score
             )
 
-            # Amygdala asymmetry: high-amygdala memories get a convergence boost
-            if settings.INTEGRATION_ENABLED and settings.AMYGDALA_ASYMMETRY_ENABLED:
-                dim_scores = cand.get("dimension_scores", {})
-                amyg_score = dim_scores.get("amygdala", dim_scores.get("amyg", 0.0))
-                if amyg_score >= settings.AMYGDALA_ASYMMETRY_THRESHOLD:
-                    convergence *= settings.AMYGDALA_ASYMMETRY_MULTIPLIER
-
             # Dynamic normalization accounting for axis weights and matched axes.
             # activation stays unnormalized — spreading activation needs raw values.
             n_axes = len(region_scores)
@@ -672,15 +664,35 @@ class Retriever:
         return bool(edge_keys & ctx_keys)
 
     async def _reconsolidate(self, result: RetrievalResult, namespace: str) -> None:
-        """Hebbian learning: strengthen edges between co-retrieved memories."""
+        """Hebbian learning: strengthen edges + update node access stats."""
         if len(result.memories) < 2:
             return
         try:
+            from datetime import datetime, timezone
+
+            from sqlalchemy import update
+
             memory_ids = [uuid.UUID(m.id) for m in result.memories]
+
+            # Strengthen edges between co-retrieved memories
             await self._edge_ops.reinforce_traversed(
                 seed_ids=memory_ids[:1],
                 included_ids=memory_ids[1:],
                 boost=1.1,
             )
+
+            # Update access stats on retrieved memory nodes
+            now = datetime.now(timezone.utc)
+            stmt = (
+                update(Memory)
+                .where(Memory.id.in_(memory_ids))
+                .values(
+                    access_count=Memory.access_count + 1,
+                    last_accessed=now,
+                )
+            )
+            await self.db.execute(stmt)
+            await self.db.flush()
+
         except Exception:
-            pass  # fire-and-forget — don't crash on reconsolidation failure
+            logger.debug("reconsolidation failed (non-fatal)", exc_info=True)
