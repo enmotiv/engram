@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 import uuid
 from collections import defaultdict
@@ -455,7 +456,7 @@ class Retriever:
                 "features": (
                     r.features if isinstance(r.features, dict) else {}
                 ),
-                "cosine_sim": r.cosine_sim,
+                "cosine_sim": r.cosine_sim if math.isfinite(r.cosine_sim) else 0.0,
             }
             for r in rows
         ]
@@ -491,9 +492,9 @@ class Retriever:
             MemoryResult(
                 id=str(r.id),
                 content=r.content,
-                activation=r.cosine_sim,
+                activation=r.cosine_sim if math.isfinite(r.cosine_sim) else 0.0,
                 dimensions_matched=[],
-                convergence_score=round(r.cosine_sim, 4),
+                convergence_score=round(r.cosine_sim, 4) if math.isfinite(r.cosine_sim) else 0.0,
                 retrieval_path="direct",
                 metadata=r.features if isinstance(r.features, dict) else {},
             )
@@ -617,6 +618,13 @@ class Retriever:
                         metadata=mem.features if isinstance(mem.features, dict) else {},
                         dimension_scores=mem.dimension_scores if isinstance(mem.dimension_scores, dict) else {},
                     )
+
+        # Sanitize: clamp non-finite activation values
+        for mem_result in active.values():
+            if not math.isfinite(mem_result.activation):
+                mem_result.activation = 0.0
+            if not math.isfinite(mem_result.convergence_score):
+                mem_result.convergence_score = 0.0
 
         # Filter: remove memories with activation <= 0 (inhibited out)
         result_list = []
