@@ -219,7 +219,7 @@ async def retrieve_memories(
         cue=req.cue,
         context=req.context,
         options=opts,
-        dimensional_cues=req.dimensional_cues,
+        axis_cues=req.axis_cues,
     )
     return result.model_dump()
 

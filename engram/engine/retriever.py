@@ -76,7 +76,7 @@ class Retriever:
         cue: str,
         context: Optional[dict] = None,
         options: Optional[RetrievalOptions] = None,
-        dimensional_cues: Optional[Dict[str, str]] = None,
+        axis_cues: Optional[Dict[str, str]] = None,
     ) -> RetrievalResult:
         opts = options or RetrievalOptions()
         start = time.monotonic()
@@ -95,8 +95,8 @@ class Retriever:
         region_vectors = await self._embedding.get_region_embeddings(cue)
 
         # Merge caller-provided dimensional cues (override LLM decomposition)
-        if dimensional_cues:
-            for region, text in dimensional_cues.items():
+        if axis_cues:
+            for region, text in axis_cues.items():
                 if region in _REGIONS and text.strip():
                     vec = await self._embedding.embed_text(text)
                     if vec is not None:

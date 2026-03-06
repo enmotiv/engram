@@ -68,7 +68,14 @@ class RetrieveRequest(BaseModel):
     max_results: int = 5
     urgency_threshold: float = 0.3
     hop_depth: int = 2
-    dimensional_cues: Optional[Dict[str, str]] = None
+    axis_cues: Optional[Dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Axis-specific query vector override. "
+            "Driven by the perceiver's current emotional or cognitive state signal. "
+            "NOT derived from relational dimension scores (impact, autonomy, etc.)."
+        ),
+    )
     exclude_types: Optional[List[str]] = Field(
         default=None,
         description=(

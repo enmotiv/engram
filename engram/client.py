@@ -137,7 +137,7 @@ class EngramClient:
         max_results: int = 5,
         urgency_threshold: float = 0.3,
         hop_depth: int = 2,
-        dimensional_cues: Optional[Dict[str, str]] = None,
+        axis_cues: Optional[Dict[str, str]] = None,
     ) -> RetrievalResult:
         payload = {
             "namespace": namespace,
@@ -147,8 +147,8 @@ class EngramClient:
             "urgency_threshold": urgency_threshold,
             "hop_depth": hop_depth,
         }
-        if dimensional_cues:
-            payload["dimensional_cues"] = dimensional_cues
+        if axis_cues:
+            payload["axis_cues"] = axis_cues
         resp = await self._client.post(
             "/v1/memories/retrieve",
             json=payload,
