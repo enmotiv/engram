@@ -20,7 +20,7 @@ from engram.engine.llm import get_llm_service
 logger = logging.getLogger(__name__)
 
 # Max memories to backfill per run (rate limit embedding API)
-BATCH_SIZE = 20
+BATCH_SIZE = 50
 
 REGION_COLUMNS = [
     "hippo_embedding",
@@ -70,6 +70,12 @@ class BackfillRegionEmbeddingsJob(WorkerJob):
         if not memories:
             return {"backfilled": 0, "skipped": 0, "total_checked": 0}
 
+        logger.info(
+            "BackfillRegionEmbeddingsJob: found %d memories needing region backfill "
+            "in namespace=%s",
+            len(memories), namespace,
+        )
+
         from engram.plugins.brain_regions.encoder import BrainRegionEncoder
         encoder = BrainRegionEncoder()
 
@@ -90,9 +96,22 @@ class BackfillRegionEmbeddingsJob(WorkerJob):
                     if vec is not None:
                         setattr(mem, f"{region}_embedding", vec)
 
+                # Mark as multi-axis encoded
+                if mem.features is None:
+                    mem.features = {}
+                existing = dict(mem.features)
+                existing["multi_axis_encoded"] = True
+                mem.features = existing
+
                 backfilled += 1
             except Exception:
                 logger.debug("Region embedding backfill failed for memory %s", mem.id, exc_info=True)
+                if mem.features is None:
+                    mem.features = {}
+                existing = dict(mem.features)
+                if "multi_axis_encoded" not in existing:
+                    existing["multi_axis_encoded"] = False
+                    mem.features = existing
                 skipped += 1
 
         await db.flush()

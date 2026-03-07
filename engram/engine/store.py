@@ -53,9 +53,18 @@ class MemoryStore:
 
         # Populate per-region embeddings for multi-axis retrieval
         region_embeddings = await self._embedding.get_region_embeddings(content)
-        for region, vec in region_embeddings.items():
-            col_name = f"{region}_embedding"
-            kwargs[col_name] = vec
+        if region_embeddings:
+            for region, vec in region_embeddings.items():
+                col_name = f"{region}_embedding"
+                kwargs[col_name] = vec
+            kwargs["features"]["multi_axis_encoded"] = True
+        else:
+            logger.warning(
+                "store.create: region decomposition failed for namespace=%s, "
+                "memory will use single-axis retrieval only",
+                namespace,
+            )
+            kwargs["features"]["multi_axis_encoded"] = False
 
         mem = Memory(**kwargs)
         self.db.add(mem)

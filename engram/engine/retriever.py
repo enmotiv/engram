@@ -373,6 +373,11 @@ class Retriever:
 
         # If no multi-axis results (all region columns NULL), fall back
         if not candidates and cue_embedding is not None:
+            logger.warning(
+                "retrieve: no region embeddings found for namespace=%s, "
+                "falling back to single-axis cosine search",
+                namespace,
+            )
             return await self._single_axis_fallback(
                 namespace, cue_embedding, top_k, exclude_types=exclude_types,
             )
@@ -402,7 +407,6 @@ class Retriever:
             )
 
             # Dynamic normalization accounting for axis weights and matched axes.
-            # activation stays unnormalized — spreading activation needs raw values.
             n_axes = len(region_scores)
             dynamic_max = (
                 _CONVERGENCE_ALPHA * (n_axes * max_weight)
@@ -414,11 +418,11 @@ class Retriever:
                 MemoryResult(
                     id=cand["id"],
                     content=cand["content"],
-                    activation=convergence,
+                    activation=round(normalized, 4),
                     dimensions_matched=dims_matched,
                     convergence_score=round(normalized, 4),
                     retrieval_path="direct",
-                    metadata=cand.get("features", {}),
+                    metadata=cand.get("features", {}) | {"_retrieval_path": "multi_axis"},
                     dimension_scores=cand.get("dimension_scores", {}),
                 )
             )
@@ -496,7 +500,7 @@ class Retriever:
                 dimensions_matched=[],
                 convergence_score=round(r.cosine_sim, 4) if math.isfinite(r.cosine_sim) else 0.0,
                 retrieval_path="direct",
-                metadata=r.features if isinstance(r.features, dict) else {},
+                metadata=(r.features if isinstance(r.features, dict) else {}) | {"_retrieval_path": "single_axis_fallback"},
             )
             for r in rows
         ]
