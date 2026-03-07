@@ -557,7 +557,9 @@ class Retriever:
                 for mem in result.scalars().all():
                     neighbor_map[str(mem.id)] = mem
 
-            # Propagate activation
+            # Propagate activation — all values clamped to [0, 1]
+            _MAX_ACTIVATION = 1.0
+
             for edge in all_edges:
                 source_id = str(edge.source_memory_id)
                 target_id = str(edge.target_memory_id)
@@ -569,7 +571,10 @@ class Retriever:
 
                 # Self-loop edges: flat additive boost, not recursive
                 if source_id == target_id:
-                    active[source_id].activation += edge.weight
+                    active[source_id].activation = min(
+                        active[source_id].activation + edge.weight,
+                        _MAX_ACTIVATION,
+                    )
                     traversed_edges.append({
                         "source_memory_id": source_id,
                         "target_memory_id": target_id,
@@ -605,8 +610,11 @@ class Retriever:
                 delta = source_activation * edge.weight * multiplier
 
                 if target_id in active:
-                    # Update existing node's activation
-                    active[target_id].activation += delta
+                    # Update existing node's activation (clamped)
+                    active[target_id].activation = min(
+                        active[target_id].activation + delta,
+                        _MAX_ACTIVATION,
+                    )
                 else:
                     # Discover new node via spreading
                     mem = neighbor_map.get(target_id)
@@ -615,7 +623,7 @@ class Retriever:
                     active[target_id] = MemoryResult(
                         id=target_id,
                         content=mem.content,
-                        activation=delta,
+                        activation=min(delta, _MAX_ACTIVATION),
                         dimensions_matched=[],
                         convergence_score=0.0,
                         retrieval_path="spreading",
@@ -623,10 +631,10 @@ class Retriever:
                         dimension_scores=mem.dimension_scores if isinstance(mem.dimension_scores, dict) else {},
                     )
 
-        # Sanitize: clamp non-finite activation values
+        # Sanitize: hard-clamp activation to [0, 1]
         for mem_result in active.values():
-            if not math.isfinite(mem_result.activation):
-                mem_result.activation = 0.0
+            if not math.isfinite(mem_result.activation) or mem_result.activation > 1.0:
+                mem_result.activation = min(mem_result.activation, 1.0) if math.isfinite(mem_result.activation) else 0.0
             if not math.isfinite(mem_result.convergence_score):
                 mem_result.convergence_score = 0.0
 
