@@ -42,12 +42,6 @@ _EDGE_MULTIPLIERS = {
 # Brain regions for multi-axis search
 _REGIONS = ["hippo", "amyg", "pfc", "sensory", "striatum", "cerebellum"]
 
-# Convergence formula blending parameter.
-# alpha=1.0 → pure breadth*depth (dims_matched * mean_score)
-# alpha=0.0 → pure max_region_score (best single-axis match)
-# Default 0.7 balances breadth of match with peak match quality.
-_CONVERGENCE_ALPHA = 0.7
-
 # Maximum possible convergence from _score_headers:
 #   6_dims * 1.0_perfect_score = 6.0
 _MAX_HEADER_CONVERGENCE = 6.0
@@ -397,22 +391,14 @@ class Retriever:
                 for region, score in region_scores.items()
             }
             scores = list(weighted_scores.values())
-            mean_score = sum(scores) / len(scores) if scores else 0.0
-            max_score = max(scores) if scores else 0.0
+            avg_score = sum(scores) / len(scores) if scores else 0.0
 
-            breadth_depth = len(dims_matched) * mean_score
-            convergence = (
-                _CONVERGENCE_ALPHA * breadth_depth
-                + (1 - _CONVERGENCE_ALPHA) * max_score
-            )
+            # Convergence formula per Marcel's spec: dims_matched * avg_score
+            convergence = len(dims_matched) * avg_score
 
-            # Dynamic normalization accounting for axis weights and matched axes.
-            n_axes = len(region_scores)
-            dynamic_max = (
-                _CONVERGENCE_ALPHA * (n_axes * max_weight)
-                + (1 - _CONVERGENCE_ALPHA) * max_weight
-            )
-            normalized = min(convergence / dynamic_max, 1.0) if dynamic_max > 0 else 0.0
+            # Fixed ceiling: theoretical max if all 6 axes matched at max_weight
+            fixed_max = len(_REGIONS) * max_weight
+            normalized = min(convergence / fixed_max, 1.0) if fixed_max > 0 else 0.0
 
             results.append(
                 MemoryResult(
