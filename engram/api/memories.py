@@ -41,16 +41,20 @@ router = APIRouter(tags=["memories"])
 
 
 def _memory_to_response(mem) -> MemoryResponse:
+    # Sanitize dimension_scores — pgvector can return numpy.float32
+    raw_scores = mem.dimension_scores or {}
+    scores = {k: float(v) for k, v in raw_scores.items()} if raw_scores else {}
+
     return MemoryResponse(
         id=str(mem.id),
         namespace=mem.namespace,
         content=mem.content,
         memory_type=mem.memory_type or "episodic",
-        dimension_scores=mem.dimension_scores or {},
+        dimension_scores=scores,
         features=mem.features or {},
         metadata=mem.features or {},  # features IS the metadata store in Engram
-        activation=mem.activation or 0.0,
-        salience=mem.salience or 0.5,
+        activation=float(mem.activation or 0.0),
+        salience=float(mem.salience or 0.5),
         access_count=mem.access_count or 0,
         created_at=mem.created_at.isoformat() if mem.created_at else None,
     )
