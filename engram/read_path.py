@@ -33,6 +33,7 @@ _EDGE_FACTORS: dict[str, float | None] = {
     "inhibitory": -0.5,
     "associative": 0.25,
     "temporal": 0.15,
+    "structural": 0.4,  # client-managed edges (e.g. entity links)
     "modulatory": None,  # multiplicative, handled separately
 }
 
@@ -165,12 +166,62 @@ async def _score_candidates(
     return scored
 
 
+def _apply_edges(
+    rows: list,
+    source_set: set[UUID],
+    activation_map: dict[UUID, float],
+) -> tuple[int, int, int, set[UUID]]:
+    """Apply edge activations and return (excitatory, inhibitory, modulatory, new_neighbors)."""
+    excitatory_count = 0
+    inhibitory_count = 0
+    modulatory_count = 0
+    new_neighbors: set[UUID] = set()
+
+    for row in rows:
+        src: UUID = row["source_id"]
+        tgt: UUID = row["target_id"]
+        etype: str = row["edge_type"]
+        weight: float = row["weight"]
+
+        if src in source_set:
+            neighbor = tgt
+            src_activation = activation_map.get(src, 0.0)
+        else:
+            neighbor = src
+            src_activation = activation_map.get(tgt, 0.0)
+
+        was_new = neighbor not in activation_map
+
+        if etype == "modulatory":
+            current = activation_map.get(neighbor, 0.0)
+            activation_map[neighbor] = current * weight
+            modulatory_count += 1
+        else:
+            factor = _EDGE_FACTORS.get(etype, 0.0)
+            if factor:
+                delta = weight * src_activation * abs(factor)
+                if factor < 0:
+                    delta = -delta
+                current = activation_map.get(neighbor, 0.0)
+                activation_map[neighbor] = max(0.0, current + delta)
+
+            if etype == "excitatory":
+                excitatory_count += 1
+            elif etype == "inhibitory":
+                inhibitory_count += 1
+
+        if was_new:
+            new_neighbors.add(neighbor)
+
+    return excitatory_count, inhibitory_count, modulatory_count, new_neighbors
+
+
 async def _spreading_activation(
     conn: asyncpg.Connection,
     seeds: list[dict],
     owner_id: UUID,
 ) -> tuple[dict[UUID, float], list[asyncpg.Record]]:
-    """Propagate activation through axis-matched edges. 1 hop only."""
+    """Propagate activation through axis-matched edges. 2 hops."""
     seed_ids = [s["id"] for s in seeds]
     all_matched_axes: set[str] = set()
     for s in seeds:
@@ -181,11 +232,16 @@ async def _spreading_activation(
     if not seed_ids or not all_matched_axes:
         return activation_map, []
 
+    all_edge_rows: list = []
+    total_exc = total_inh = total_mod = 0
+    axis_list = list(all_matched_axes)
+
     with Span(
         "read_path.spreading_activation",
         component="read_path",
-        expected_ms=5,
+        expected_ms=10,
     ):
+        # Hop 1: from seeds
         rows = await conn.fetch(
             "SELECT source_id, target_id, edge_type, weight, axis "
             "FROM edges "
@@ -194,56 +250,52 @@ async def _spreading_activation(
             "AND axis = ANY($3)",
             owner_id,
             seed_ids,
-            list(all_matched_axes),
+            axis_list,
         )
+        all_edge_rows.extend(rows)
 
         seed_set = set(seed_ids)
-        excitatory_count = 0
-        inhibitory_count = 0
-        modulatory_count = 0
+        exc, inh, mod, hop1_neighbors = _apply_edges(
+            rows, seed_set, activation_map,
+        )
+        total_exc += exc
+        total_inh += inh
+        total_mod += mod
 
-        for row in rows:
-            src: UUID = row["source_id"]
-            tgt: UUID = row["target_id"]
-            etype: str = row["edge_type"]
-            weight: float = row["weight"]
+        # Hop 2: from newly discovered neighbors (if any)
+        if hop1_neighbors:
+            hop2_ids = list(hop1_neighbors)
+            rows2 = await conn.fetch(
+                "SELECT source_id, target_id, edge_type, weight, axis "
+                "FROM edges "
+                "WHERE owner_id = $1 AND weight > 0.0 "
+                "AND (source_id = ANY($2) OR target_id = ANY($2)) "
+                "AND axis = ANY($3)",
+                owner_id,
+                hop2_ids,
+                axis_list,
+            )
+            all_edge_rows.extend(rows2)
 
-            if src in seed_set:
-                neighbor = tgt
-                src_activation = activation_map.get(src, 0.0)
-            else:
-                neighbor = src
-                src_activation = activation_map.get(tgt, 0.0)
-
-            if etype == "modulatory":
-                current = activation_map.get(neighbor, 0.0)
-                activation_map[neighbor] = current * weight
-                modulatory_count += 1
-            else:
-                factor = _EDGE_FACTORS.get(etype, 0.0)
-                if factor:
-                    delta = weight * src_activation * abs(factor)
-                    if factor < 0:
-                        delta = -delta
-                    current = activation_map.get(neighbor, 0.0)
-                    activation_map[neighbor] = max(0.0, current + delta)
-
-                if etype == "excitatory":
-                    excitatory_count += 1
-                elif etype == "inhibitory":
-                    inhibitory_count += 1
+            exc2, inh2, mod2, _ = _apply_edges(
+                rows2, hop1_neighbors, activation_map,
+            )
+            total_exc += exc2
+            total_inh += inh2
+            total_mod += mod2
 
     tc = get_trace()
     if tc:
         tc.spreading = {
-            "edges_loaded": len(rows),
-            "excitatory_fired": excitatory_count,
-            "inhibitory_fired": inhibitory_count,
-            "modulatory_fired": modulatory_count,
+            "edges_loaded": len(all_edge_rows),
+            "excitatory_fired": total_exc,
+            "inhibitory_fired": total_inh,
+            "modulatory_fired": total_mod,
             "nodes_activated_by_spread": len(activation_map) - len(seeds),
+            "hop1_neighbors": len(hop1_neighbors) if hop1_neighbors else 0,
         }
 
-    return activation_map, list(rows)
+    return activation_map, all_edge_rows
 
 
 async def _fetch_nodes(

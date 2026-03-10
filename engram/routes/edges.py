@@ -1,4 +1,9 @@
-"""Edge creation endpoint for structural (non-Dreamer) edges."""
+"""Edge creation endpoint for structural (non-Dreamer) edges.
+
+Clients use this to create decay-exempt edges between memory nodes.
+Dreamer-managed edge types (excitatory, inhibitory, etc.) cannot be
+created via this endpoint — only ``structural`` edges are allowed.
+"""
 
 from uuid import UUID
 
@@ -18,7 +23,7 @@ router = APIRouter(prefix="/v1")
 class CreateEdgeRequest(BaseModel):
     source_id: UUID
     target_id: UUID
-    edge_type: str = Field(..., pattern=r"^entity_link$")
+    edge_type: str = Field(..., pattern=r"^structural$")
     axis: str = "sensory"
     weight: float = Field(default=0.8, ge=0.0, le=1.0)
 
@@ -31,7 +36,7 @@ async def create_edge(
 ) -> dict:
     """Create a structural edge between two memory nodes.
 
-    Only entity_link edges can be created via this endpoint.
+    Only structural edges can be created via this endpoint.
     Dreamer-managed edge types are rejected.
     """
     # Enforce consistent source < target ordering
