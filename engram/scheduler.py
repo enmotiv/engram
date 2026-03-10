@@ -48,6 +48,29 @@ async def classify_new_memories(ctx: dict, owner_id: str) -> dict:
 # -- Periodic Jobs -------------------------------------------------------------
 
 
+async def classify_all_unprocessed(ctx: dict) -> dict:
+    """Periodic: classify unprocessed memories for all owners.
+
+    Catches memories that weren't classified event-driven (e.g. bulk imports,
+    failed enqueue, or duplicates that were later re-inserted).
+    """
+    from engram.dreamer import process_new_memories
+
+    pool = ctx["db_pool"]
+    owners = await _get_all_owner_ids(pool)
+    total_classified = 0
+    total_edges = 0
+    for oid in owners:
+        result = await process_new_memories(pool, oid)
+        total_classified += result.get("memories_processed", 0)
+        total_edges += result.get("edges_created", 0)
+    return {
+        "owners": len(owners),
+        "total_classified": total_classified,
+        "total_edges": total_edges,
+    }
+
+
 async def decay_all_activations(ctx: dict) -> dict:
     """Hourly: decay activation on all owners."""
     from engram.dreamer import decay_activations
@@ -138,6 +161,11 @@ class WorkerSettings:
     ]
 
     cron_jobs = [
+        cron(
+            classify_all_unprocessed,
+            hour={0, 6, 12, 18},
+            minute={15},
+        ),  # Every 6 hours
         cron(
             decay_all_activations,
             hour=set(range(24)),
