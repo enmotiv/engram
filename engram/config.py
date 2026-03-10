@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     engram_embedding_dimensions: int = 1024
     engram_llm_model: str = "openai/gpt-4o-mini"
     database_url: str
+    redis_url: str = "redis://localhost:6379/0"
     engram_api_port: int = 8000
     engram_log_level: str = "INFO"
     engram_extensions: str = ""

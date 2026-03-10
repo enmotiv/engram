@@ -93,3 +93,27 @@ async def stats(
             "unprocessed_nodes": row["unprocessed_nodes"],
         }
     }
+
+
+@router.post("/admin/dreamer/run")
+async def trigger_dreamer(
+    request: Request,
+    owner_id: UUID = Depends(get_owner_id),  # noqa: B008
+) -> dict:
+    """Manually trigger a full Dreamer cycle for this owner."""
+    from engram.dreamer import run_cycle
+
+    result = await run_cycle(request.app.state.db, owner_id)
+    return {"data": result}
+
+
+@router.post("/admin/dreamer/classify")
+async def trigger_classification(
+    request: Request,
+    owner_id: UUID = Depends(get_owner_id),  # noqa: B008
+) -> dict:
+    """Manually trigger edge classification for unprocessed memories."""
+    from engram.dreamer import process_new_memories
+
+    result = await process_new_memories(request.app.state.db, owner_id)
+    return {"data": result}

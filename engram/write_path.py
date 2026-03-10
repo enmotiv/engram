@@ -122,4 +122,31 @@ async def encode_memory(
         node_id=str(node_id),
         salience=salience,
     )
+
+    await _enqueue_classification(str(owner_id))
+
     return {"id": str(node_id), "salience": salience}
+
+
+async def _enqueue_classification(owner_id: str) -> None:
+    """Enqueue Dreamer classification for this owner. Fire-and-forget."""
+    try:
+        from arq import create_pool
+
+        from engram.scheduler import _parse_redis_settings
+
+        redis = await create_pool(_parse_redis_settings())
+        await redis.enqueue_job(
+            "classify_new_memories",
+            owner_id,
+            _job_id=f"classify:{owner_id}",  # deduplicate per owner
+        )
+        await redis.close()
+    except Exception:
+        # Redis down = classification delayed, not lost.
+        # Periodic job or manual trigger picks up unprocessed nodes.
+        logger.warning(
+            "write_path.enqueue_failed",
+            component="write_path",
+            owner_id=owner_id,
+        )
