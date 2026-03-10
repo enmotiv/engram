@@ -29,34 +29,38 @@ Given two memories for the same user, classify their relationship ON EACH AXIS.
 MEMORY A (new): "{new_content}"
 MEMORY B (existing): "{old_content}"
 
-For each axis, determine what edges exist between A and B.
-Only answer YES if there is a clear, obvious relationship. When in doubt, NO.
-A pair can have multiple edge types on the same axis.
+STRICT RULES:
+- Most memory pairs have NO meaningful relationship. Default to empty arrays.
+- Only create an edge if the relationship is specific and non-obvious.
+- "Both are about the user's work" is NOT a relationship. That's generic similarity.
+- "Both mention a project" is NOT a relationship unless one directly changes, updates, or contradicts the other.
+- Weights must reflect strength: 0.3 = weak but real, 0.5 = moderate, 0.7 = strong, 0.9 = direct cause/effect.
+- If you're unsure, return an empty array for that axis.
+- A good classification produces edges on 1-2 axes at most. If you're creating edges on 4+ axes, you're being too generous.
 
 Edge types:
-- EXCITATORY: A reinforces, supports, or provides evidence for B
-- INHIBITORY: A contradicts, replaces, or outdates B
-- ASSOCIATIVE: A and B are about related topics but independent
-- TEMPORAL: A and B are sequential events (A happened after B)
-- MODULATORY: A changes how B should be interpreted in certain contexts
+- EXCITATORY: A directly reinforces or provides specific evidence for B
+- INHIBITORY: A contradicts, replaces, or outdates specific claims in B
+- ASSOCIATIVE: A and B share a specific entity, event, or decision (not just a topic)
+- TEMPORAL: A and B are sequential events in a clear timeline
+- MODULATORY: A fundamentally changes how B should be interpreted
 
-TEMPORAL: Does A change B's temporal relevance? Are they sequential?
-EMOTIONAL: Does A change the emotional significance of B?
-SEMANTIC: Does A reinforce, contradict, or relate to B's core meaning?
+TEMPORAL: Are A and B sequential events in a clear timeline?
+EMOTIONAL: Does A specifically change the emotional significance of B?
+SEMANTIC: Does A reinforce, contradict, or update B's core meaning with specific evidence?
 SENSORY: Does A update specific facts, names, numbers, or details in B?
-ACTION: Does A change what actions or behaviors B implies?
-PROCEDURAL: Does A change routines or patterns described in B?
+ACTION: Does A directly change what actions or behaviors B implies?
+PROCEDURAL: Does A change specific routines or patterns described in B?
 
-Return JSON only:
+Return JSON only. Empty arrays are expected and correct for most axes:
 {{
-  "temporal": [{{"type": "...", "weight": 0.0}}],
+  "temporal": [],
   "emotional": [],
-  "semantic": [{{"type": "...", "weight": 0.0}}],
+  "semantic": [],
   "sensory": [],
   "action": [],
   "procedural": []
-}}
-Empty array [] means no edges on that axis."""
+}}"""
 
 
 # --- Candidate Search ---
@@ -74,7 +78,7 @@ async def _find_candidates(
         "SELECT id, GREATEST(0.0, 1 - (vec_semantic <=> $1)) AS score "
         "FROM memory_nodes "
         "WHERE owner_id = $2 AND id != $3 AND is_deleted = FALSE "
-        "ORDER BY vec_semantic <=> $1 LIMIT 30",
+        "ORDER BY vec_semantic <=> $1 LIMIT 15",
         vectors["semantic"],
         owner_id,
         memory_id,
@@ -88,7 +92,7 @@ async def _find_candidates(
             f"SELECT id, GREATEST(0.0, 1 - ({col} <=> $1)) AS score "  # noqa: S608
             f"FROM memory_nodes "
             f"WHERE owner_id = $2 AND id != $3 AND is_deleted = FALSE "
-            f"ORDER BY {col} <=> $1 LIMIT 10",
+            f"ORDER BY {col} <=> $1 LIMIT 5",
             vectors[axis],
             owner_id,
             memory_id,
@@ -112,6 +116,10 @@ async def _find_candidates(
         if nid not in all_ids:
             all_ids.add(nid)
             result.append({"id": nid, "score": score})
+
+    # Filter: only candidates with meaningful similarity
+    MIN_CANDIDATE_SIMILARITY = 0.55
+    result = [c for c in result if c["score"] >= MIN_CANDIDATE_SIMILARITY]
 
     return result
 
@@ -184,7 +192,7 @@ async def _store_edges(
             if not isinstance(raw_weight, (int, float)):
                 continue
             weight = min(1.0, max(0.0, float(raw_weight)))
-            if weight <= 0.1:
+            if weight <= 0.3:
                 continue
 
             try:
@@ -235,9 +243,29 @@ async def process_new_memories(
             owner_id,
         )
 
+    MAX_EDGES_PER_NODE = 20
+
     for memory in unprocessed:
         mem_id: UUID = memory["id"]
         vectors = {axis: memory[f"vec_{axis}"] for axis in AXES}
+
+        # Skip if this node already has enough edges
+        async with tenant_connection(db_pool, owner_id) as conn:
+            existing_edge_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM edges "
+                "WHERE owner_id = $1 AND (source_id = $2 OR target_id = $2)",
+                owner_id,
+                mem_id,
+            )
+        if existing_edge_count >= MAX_EDGES_PER_NODE:
+            async with tenant_connection(db_pool, owner_id) as conn:
+                await conn.execute(
+                    "UPDATE memory_nodes SET dreamer_processed = TRUE "
+                    "WHERE id = $1",
+                    mem_id,
+                )
+            stats["memories_processed"] += 1
+            continue
 
         # Find candidates + fetch their content (fast DB)
         async with tenant_connection(db_pool, owner_id) as conn:
@@ -467,10 +495,10 @@ async def prune_edges(
     db_pool: asyncpg.Pool,
     owner_id: UUID,
 ) -> int:
-    """Delete edges with weight < 0.05. Returns count."""
+    """Delete edges with weight < 0.15. Returns count."""
     async with tenant_connection(db_pool, owner_id) as conn:
         result = await conn.execute(
-            "DELETE FROM edges WHERE owner_id = $1 AND weight < 0.05 "
+            "DELETE FROM edges WHERE owner_id = $1 AND weight < 0.15 "
             "AND edge_type != 'structural'",
             owner_id,
         )
