@@ -34,6 +34,7 @@ class EdgeType(StrEnum):
     ASSOCIATIVE = "associative"
     TEMPORAL = "temporal"
     MODULATORY = "modulatory"
+    ENTITY_LINK = "entity_link"
 
 
 DIMENSION_PREFIXES: dict[str, str] = {

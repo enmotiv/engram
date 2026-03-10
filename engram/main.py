@@ -84,8 +84,9 @@ async def load_extensions(app: FastAPI, db: asyncpg.Pool) -> None:
             raise  # fail fast
 
 
-from engram.routes import health, memories, recall  # noqa: E402
+from engram.routes import edges, health, memories, recall  # noqa: E402
 
 app.include_router(memories.router)
 app.include_router(recall.router)
 app.include_router(health.router)
+app.include_router(edges.router)

@@ -19,6 +19,7 @@ _VALID_EDGE_TYPES = {
     "associative",
     "temporal",
     "modulatory",
+    "entity_link",
 }
 _VALID_AXES = set(AXES)
 
@@ -306,7 +307,8 @@ async def decay_activations(
             "  activation_level = GREATEST(0.01, activation_level * 0.95) "
             "WHERE owner_id = $1 "
             "  AND last_accessed < NOW() - INTERVAL '24 hours' "
-            "  AND is_deleted = FALSE",
+            "  AND is_deleted = FALSE "
+            "  AND NOT (metadata->>'type' = 'entity-summary')",
             owner_id,
         )
     count = _parse_update_count(result)
@@ -328,7 +330,8 @@ async def decay_edge_weights(
         result = await conn.execute(
             "UPDATE edges SET weight = weight * 0.9 "
             "WHERE owner_id = $1 "
-            "  AND updated_at < NOW() - INTERVAL '30 days'",
+            "  AND updated_at < NOW() - INTERVAL '30 days' "
+            "  AND edge_type != 'entity_link'",
             owner_id,
         )
     count = _parse_update_count(result)
@@ -467,7 +470,8 @@ async def prune_edges(
     """Delete edges with weight < 0.05. Returns count."""
     async with tenant_connection(db_pool, owner_id) as conn:
         result = await conn.execute(
-            "DELETE FROM edges WHERE owner_id = $1 AND weight < 0.05",
+            "DELETE FROM edges WHERE owner_id = $1 AND weight < 0.05 "
+            "AND edge_type != 'entity_link'",
             owner_id,
         )
     count = _parse_delete_count(result)
