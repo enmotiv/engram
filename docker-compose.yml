@@ -1,63 +1,32 @@
 services:
-  postgres:
+  db:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: engram
-      POSTGRES_PASSWORD: engram
       POSTGRES_DB: engram
+      POSTGRES_USER: engram
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-engram_dev}
     ports:
-      - "5433:5432"
+      - '5434:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./scripts/init-pgvector.sql:/docker-entrypoint-initdb.d/01-pgvector.sql
+      - ./migrations:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U engram"]
+      test: ['CMD-SHELL', 'pg_isready -U engram']
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 5
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6380:6379"
-    volumes:
-      - redisdata:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  engram-api:
+  engram:
     build: .
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
-      - "8100:8100"
+      - '8000:8000'
+    env_file:
+      - .env
     environment:
-      ENGRAM_DATABASE_URL: postgresql+asyncpg://engram:engram@postgres:5432/engram
-      ENGRAM_REDIS_URL: redis://redis:6379/0
-      ENGRAM_PLUGIN: engram.plugins.brain_regions
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    command: >
-      sh -c "python -c 'from engram.db.session import async_engine; from engram.db.models import Base; import asyncio; asyncio.run((lambda: Base.metadata.create_all(async_engine))())' 2>/dev/null;
-             uvicorn engram.api.app:app --host 0.0.0.0 --port 8100"
-
-  engram-dreamer:
-    build: .
-    environment:
-      ENGRAM_DATABASE_URL: postgresql+asyncpg://engram:engram@postgres:5432/engram
-      ENGRAM_REDIS_URL: redis://redis:6379/0
-      ENGRAM_PLUGIN: engram.plugins.brain_regions
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    command: arq engram.dreamer.scheduler.WorkerSettings
+      DATABASE_URL: postgresql://engram:${DB_PASSWORD:-engram_dev}@db:5432/engram
 
 volumes:
   pgdata:
-  redisdata:

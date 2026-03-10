@@ -1,33 +1,30 @@
 """Application configuration via environment variables."""
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = "postgresql+asyncpg://engram:engram@localhost:5432/engram"
-    REDIS_URL: str = "redis://localhost:6379/0"
-    EMBEDDING_DIM: int = 1024
-    ENGRAM_PLUGIN: str = "engram.plugins.brain_regions"
-    ENGRAM_PLUGINS: str = ""  # Comma-separated plugin modules (overrides ENGRAM_PLUGIN when set)
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+    )
 
-    # Embedding: "local" (sentence-transformers) or "api" (OpenAI-compatible endpoint)
-    EMBEDDING_PROVIDER: str = "api"  # "api" or "local"
-    EMBEDDING_API_URL: str = ""  # e.g. https://openrouter.ai/api/v1/embeddings
-    EMBEDDING_API_KEY: str = ""  # API key for embedding endpoint
-    EMBEDDING_MODEL: str = "baai/bge-m3"  # model name for API calls
-
-    # LLM provider: "none" (heuristic only), "ollama", or "openai" (OpenAI-compatible)
-    LLM_PROVIDER: str = "none"
-    LLM_API_KEY: str = ""
-    LLM_BASE_URL: str = ""  # Auto-set per provider if empty
-    LLM_MODEL: str = ""
-
-    model_config = {"env_prefix": "ENGRAM_", "env_file": ".env"}
+    openrouter_api_key: str
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    engram_embedding_model: str = "openai/text-embedding-3-small"
+    engram_embedding_dimensions: int = 1024
+    engram_llm_model: str = "openai/gpt-4o-mini"
+    database_url: str
+    engram_api_port: int = 8000
+    engram_log_level: str = "INFO"
+    engram_extensions: str = ""
+    engram_retrieval_exclude_tags: str = ""
 
     @property
-    def plugin_paths(self) -> str:
-        """Return the comma-separated plugin string to load."""
-        return self.ENGRAM_PLUGINS if self.ENGRAM_PLUGINS else self.ENGRAM_PLUGIN
+    def exclude_tags_set(self) -> set[str]:
+        if not self.engram_retrieval_exclude_tags:
+            return set()
+        return {t.strip() for t in self.engram_retrieval_exclude_tags.split(",")}
 
 
 settings = Settings()
