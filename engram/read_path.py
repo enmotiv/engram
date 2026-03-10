@@ -107,8 +107,13 @@ async def _multi_axis_search(
 async def _score_candidates(
     conn: asyncpg.Connection,
     candidates: dict[UUID, dict],
+    cue: str = "",
 ) -> list[dict]:
-    """Score and rank candidates by convergence * activation."""
+    """Score and rank candidates by convergence * activation.
+
+    Applies a keyword-match boost when cue tokens appear in content,
+    compensating for embedding models that struggle with proper nouns.
+    """
     node_ids = list(candidates.keys())
     if not node_ids:
         return []
@@ -117,12 +122,17 @@ async def _score_candidates(
         "read_path.convergence", component="read_path", expected_ms=1
     ):
         rows = await conn.fetch(
-            "SELECT id, activation_level FROM memory_nodes WHERE id = ANY($1)",
+            "SELECT id, activation_level, content FROM memory_nodes WHERE id = ANY($1)",
             node_ids,
         )
         activations = {row["id"]: row["activation_level"] for row in rows}
+        contents = {row["id"]: (row["content"] or "").lower() for row in rows}
+
+        # Tokenize cue for keyword matching (words ≥ 2 chars)
+        cue_tokens = [t.lower() for t in cue.split() if len(t) >= 2]
 
         scored = []
+        keyword_boost_count = 0
         for node_id, data in candidates.items():
             dims_matched = len(data["scores"])
             if dims_matched == 0:
@@ -131,6 +141,16 @@ async def _score_candidates(
             convergence = dims_matched * avg_score
             activation = activations.get(node_id, 0.0)
             adjusted = convergence * activation
+
+            # Keyword boost: if cue tokens appear in content, boost score
+            if cue_tokens:
+                content_lower = contents.get(node_id, "")
+                matched_tokens = sum(1 for t in cue_tokens if t in content_lower)
+                if matched_tokens > 0:
+                    # Boost proportional to fraction of cue tokens matched
+                    boost = 1.0 + (matched_tokens / len(cue_tokens))
+                    adjusted *= boost
+                    keyword_boost_count += 1
 
             scored.append({
                 "id": node_id,
@@ -162,6 +182,7 @@ async def _score_candidates(
             }
             for s in scored
         ]
+        tc.keyword_boost_count = keyword_boost_count
 
     return scored
 
@@ -407,7 +428,7 @@ async def recall_memories(
         # Phase B2: score + spread + fetch (one connection)
         async with tenant_connection(db_pool, owner_id) as conn:
             # 2. Convergence scoring
-            scored = await _score_candidates(conn, candidates)
+            scored = await _score_candidates(conn, candidates, cue=cue)
 
             # 3. Spreading activation
             activation_map, edge_rows = await _spreading_activation(
