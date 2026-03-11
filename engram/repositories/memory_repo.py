@@ -79,9 +79,21 @@ async def find_by_vector_similarity(
     vector: list[float],
     axis: str,
     limit: int = 5,
+    exclude_id: UUID | None = None,
 ) -> list[asyncpg.Record]:
     """Find memories by vector similarity on a given axis."""
     col = f"vec_{axis}"
+    if exclude_id is not None:
+        return await conn.fetch(
+            f"SELECT id, content, GREATEST(0.0, 1 - ({col} <=> $1)) AS score "  # noqa: S608
+            f"FROM memory_nodes "
+            f"WHERE owner_id = $2 AND id != $3 AND is_deleted = FALSE "
+            f"ORDER BY {col} <=> $1 LIMIT $4",
+            vector,
+            owner_id,
+            exclude_id,
+            limit,
+        )
     return await conn.fetch(
         f"SELECT id, content, GREATEST(0.0, 1 - ({col} <=> $1)) AS score "  # noqa: S608
         f"FROM memory_nodes "
@@ -229,6 +241,110 @@ async def find_near_duplicates(
         sample_size,
         similarity_threshold,
         max_pairs,
+    )
+
+
+async def count_active_nodes(
+    conn: asyncpg.Connection,
+    owner_id: UUID,
+    node_ids: list[UUID],
+) -> int:
+    """Count how many of the given nodes exist and are not deleted."""
+    return await conn.fetchval(
+        "SELECT COUNT(*) FROM memory_nodes "
+        "WHERE owner_id = $1 AND id = ANY($2) AND is_deleted = FALSE",
+        owner_id,
+        node_ids,
+    )
+
+
+async def fetch_owner_stats(
+    conn: asyncpg.Connection,
+    owner_id: UUID,
+) -> asyncpg.Record:
+    """Fetch aggregate stats for an owner's memory nodes."""
+    return await conn.fetchrow(
+        "SELECT "
+        "  COUNT(*) FILTER (WHERE is_deleted = FALSE) AS node_count, "
+        "  AVG(activation_level) FILTER (WHERE is_deleted = FALSE) "
+        "    AS avg_activation, "
+        "  COUNT(*) FILTER "
+        "    (WHERE dreamer_processed = FALSE AND is_deleted = FALSE) "
+        "    AS unprocessed_nodes "
+        "FROM memory_nodes "
+        "WHERE owner_id = $1",
+        owner_id,
+    )
+
+
+async def fetch_single_memory(
+    conn: asyncpg.Connection,
+    memory_id: UUID,
+    owner_id: UUID,
+) -> asyncpg.Record | None:
+    """Fetch a single non-deleted memory by ID."""
+    return await conn.fetchrow(
+        "SELECT id, content, content_hash, created_at, last_accessed, "
+        "access_count, activation_level, salience, source_type, "
+        "session_id, metadata "
+        "FROM memory_nodes "
+        "WHERE id = $1 AND owner_id = $2 AND is_deleted = FALSE",
+        memory_id,
+        owner_id,
+    )
+
+
+async def list_memories_paginated(
+    conn: asyncpg.Connection,
+    owner_id: UUID,
+    *,
+    limit: int,
+    order_sql: str,
+    cursor_dt=None,
+    cursor_direction: str = "before",
+    source_types: list[str] | None = None,
+) -> list[asyncpg.Record]:
+    """List memories with cursor pagination and optional filters."""
+    conditions = ["owner_id = $1", "is_deleted = FALSE"]
+    params: list = [owner_id]
+    idx = 2
+
+    if cursor_dt is not None:
+        if cursor_direction == "after":
+            conditions.append(f"created_at > ${idx}")
+        else:
+            conditions.append(f"created_at < ${idx}")
+        params.append(cursor_dt)
+        idx += 1
+
+    if source_types:
+        conditions.append(f"source_type = ANY(${idx})")
+        params.append(source_types)
+        idx += 1
+
+    params.append(limit)
+
+    where = " AND ".join(conditions)
+    return await conn.fetch(
+        f"SELECT id, content, content_hash, created_at, last_accessed, "  # noqa: S608
+        f"access_count, activation_level, salience, source_type, "
+        f"session_id, metadata "
+        f"FROM memory_nodes "
+        f"WHERE {where} "
+        f"ORDER BY {order_sql} "
+        f"LIMIT ${idx}",
+        *params,
+    )
+
+
+async def fetch_content_by_ids(
+    conn: asyncpg.Connection,
+    node_ids: list[UUID],
+) -> list[asyncpg.Record]:
+    """Fetch id and content for a list of node IDs."""
+    return await conn.fetch(
+        "SELECT id, content FROM memory_nodes WHERE id = ANY($1)",
+        node_ids,
     )
 
 

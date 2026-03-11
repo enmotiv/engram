@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 from uuid import UUID
 
@@ -11,8 +10,9 @@ import structlog
 
 from engram.config import settings
 from engram.core.db import tenant_connection
-from engram.models import AXES, SourceType, compute_content_hash, generate_node_id
 from engram.core.tracing import WRITE_LATENCY, Span
+from engram.models import AXES, SourceType, compute_content_hash, generate_node_id
+from engram.repositories import memory_repo
 from engram.services.embedding import compute_salience, embed_six_dimensions
 
 logger = structlog.get_logger()
@@ -52,11 +52,8 @@ async def encode_memory(
         # Phase A: dedup check (fast DB hit, release connection immediately)
         with Span("write_path.dedup", component="write_path", expected_ms=5):
             async with tenant_connection(db_pool, owner_id) as conn:
-                existing = await conn.fetchval(
-                    "SELECT id FROM memory_nodes "
-                    "WHERE owner_id = $1 AND content_hash = $2",
-                    owner_id,
-                    content_hash,
+                existing = await memory_repo.find_by_content_hash(
+                    conn, owner_id, content_hash
                 )
         if existing:
             return {"duplicate": True, "existing_id": str(existing)}
@@ -76,45 +73,23 @@ async def encode_memory(
         ):
             async with tenant_connection(db_pool, owner_id) as conn:
                 try:
-                    await conn.execute(
-                        """INSERT INTO memory_nodes (
-                            id, owner_id, content, content_hash, source_type,
-                            session_id, embedding_model, embedding_dimensions,
-                            salience, activation_level, access_count,
-                            vec_temporal, vec_emotional, vec_semantic,
-                            vec_sensory, vec_action, vec_procedural,
-                            metadata, dreamer_processed
-                        ) VALUES (
-                            $1, $2, $3, $4, $5,
-                            $6, $7, $8,
-                            $9, 1.0, 0,
-                            $10, $11, $12,
-                            $13, $14, $15,
-                            $16, FALSE
-                        )""",
-                        node_id,
-                        owner_id,
-                        content,
-                        content_hash,
-                        source_type.value,
-                        session_id,
-                        settings.engram_embedding_model,
-                        settings.engram_embedding_dimensions,
-                        salience,
-                        vectors["temporal"],
-                        vectors["emotional"],
-                        vectors["semantic"],
-                        vectors["sensory"],
-                        vectors["action"],
-                        vectors["procedural"],
-                        json.dumps(metadata) if metadata else "{}",
+                    await memory_repo.insert_memory(
+                        conn,
+                        node_id=node_id,
+                        owner_id=owner_id,
+                        content=content,
+                        content_hash=content_hash,
+                        source_type=source_type.value,
+                        session_id=session_id,
+                        embedding_model=settings.engram_embedding_model,
+                        embedding_dimensions=settings.engram_embedding_dimensions,
+                        salience=salience,
+                        vectors=vectors,
+                        metadata=metadata,
                     )
                 except asyncpg.UniqueViolationError:
-                    existing = await conn.fetchval(
-                        "SELECT id FROM memory_nodes "
-                        "WHERE owner_id = $1 AND content_hash = $2",
-                        owner_id,
-                        content_hash,
+                    existing = await memory_repo.find_by_content_hash(
+                        conn, owner_id, content_hash
                     )
                     return {"duplicate": True, "existing_id": str(existing)}
 

@@ -11,6 +11,7 @@ from engram.auth import get_owner_id
 from engram.core.db import tenant_connection
 from engram.core.errors import EngramError
 from engram.models import CreateMemoryRequest, SourceType
+from engram.repositories import memory_repo
 from engram.services.write import encode_memory
 
 logger = structlog.get_logger()
@@ -73,15 +74,7 @@ async def get_memory(
 ) -> dict:
     db = request.app.state.db
     async with tenant_connection(db, owner_id) as conn:
-        row = await conn.fetchrow(
-            "SELECT id, content, content_hash, created_at, last_accessed, "
-            "access_count, activation_level, salience, source_type, "
-            "session_id, metadata "
-            "FROM memory_nodes "
-            "WHERE id = $1 AND owner_id = $2 AND is_deleted = FALSE",
-            memory_id,
-            owner_id,
-        )
+        row = await memory_repo.fetch_single_memory(conn, memory_id, owner_id)
 
     if not row:
         raise EngramError("NOT_FOUND", "Memory not found", 404)
@@ -128,41 +121,18 @@ async def list_memories(
             )
         source_types = types
 
-    # Build query dynamically
-    conditions = ["owner_id = $1", "is_deleted = FALSE"]
-    params: list = [owner_id]
-    idx = 2
-
-    if cursor_dt:
-        if sort == "created_at:asc":
-            conditions.append(f"created_at > ${idx}")
-        else:
-            conditions.append(f"created_at < ${idx}")
-        params.append(cursor_dt)
-        idx += 1
-
-    if source_types:
-        conditions.append(f"source_type = ANY(${idx})")
-        params.append(source_types)
-        idx += 1
-
-    # Fetch limit + 1 to detect next page
-    params.append(limit + 1)
-
-    where = " AND ".join(conditions)
-    order = _VALID_SORTS[sort]
+    cursor_direction = "after" if sort == "created_at:asc" else "before"
 
     db = request.app.state.db
     async with tenant_connection(db, owner_id) as conn:
-        rows = await conn.fetch(
-            f"SELECT id, content, content_hash, created_at, last_accessed, "  # noqa: S608
-            f"access_count, activation_level, salience, source_type, "
-            f"session_id, metadata "
-            f"FROM memory_nodes "
-            f"WHERE {where} "
-            f"ORDER BY {order} "
-            f"LIMIT ${idx}",
-            *params,
+        rows = await memory_repo.list_memories_paginated(
+            conn,
+            owner_id,
+            limit=limit + 1,  # fetch one extra to detect next page
+            order_sql=_VALID_SORTS[sort],
+            cursor_dt=cursor_dt,
+            cursor_direction=cursor_direction,
+            source_types=source_types,
         )
 
     has_more = len(rows) > limit
@@ -188,14 +158,8 @@ async def delete_memory(
 ) -> dict:
     db = request.app.state.db
     async with tenant_connection(db, owner_id) as conn:
-        result = await conn.execute(
-            "UPDATE memory_nodes SET is_deleted = TRUE "
-            "WHERE id = $1 AND owner_id = $2 AND is_deleted = FALSE",
-            memory_id,
-            owner_id,
-        )
+        count = await memory_repo.soft_delete(conn, memory_id, owner_id)
 
-    count = _parse_update_count(result)
     if count == 0:
         raise EngramError("NOT_FOUND", "Memory not found", 404)
 
@@ -223,10 +187,3 @@ def _row_to_dict(row) -> dict:  # noqa: ANN001
         "last_accessed": row["last_accessed"].isoformat(),
         "access_count": row["access_count"],
     }
-
-
-def _parse_update_count(result: str) -> int:
-    try:
-        return int(result.split()[-1])
-    except (ValueError, IndexError):
-        return 0

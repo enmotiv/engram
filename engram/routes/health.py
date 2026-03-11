@@ -8,8 +8,9 @@ from fastapi.responses import JSONResponse
 
 from engram.auth import get_owner_id
 from engram.core.db import tenant_connection
-from engram.services.embedding import get_client
 from engram.core.tracing import AVG_ACTIVATION, EDGES_TOTAL, NODES_TOTAL
+from engram.repositories import edge_repo, memory_repo
+from engram.services.embedding import get_client
 
 logger = structlog.get_logger()
 
@@ -59,22 +60,8 @@ async def stats(
     """Per-owner node/edge statistics."""
     db = request.app.state.db
     async with tenant_connection(db, owner_id) as conn:
-        row = await conn.fetchrow(
-            "SELECT "
-            "  COUNT(*) FILTER (WHERE is_deleted = FALSE) AS node_count, "
-            "  AVG(activation_level) FILTER (WHERE is_deleted = FALSE) "
-            "    AS avg_activation, "
-            "  COUNT(*) FILTER "
-            "    (WHERE dreamer_processed = FALSE AND is_deleted = FALSE) "
-            "    AS unprocessed_nodes "
-            "FROM memory_nodes "
-            "WHERE owner_id = $1",
-            owner_id,
-        )
-        edge_count = await conn.fetchval(
-            "SELECT COUNT(*) FROM edges WHERE owner_id = $1",
-            owner_id,
-        )
+        row = await memory_repo.fetch_owner_stats(conn, owner_id)
+        edge_count = await edge_repo.count_all(conn, owner_id)
 
     node_count = row["node_count"]
     avg_act = float(row["avg_activation"] or 0)

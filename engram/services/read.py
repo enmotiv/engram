@@ -11,6 +11,7 @@ import structlog
 
 from engram.config import settings
 from engram.core.db import tenant_connection
+from engram.core.tracing import RECALL_LATENCY, RECONSOLIDATION_FAILURES, Span, get_trace
 from engram.models import (
     AXES,
     ConfidenceLevel,
@@ -20,9 +21,9 @@ from engram.models import (
     RecallResponse,
     compute_confidence,
 )
+from engram.repositories import edge_repo, memory_repo
 from engram.services.embedding import embed_six_dimensions
 from engram.services.reconsolidation import reconsolidate
-from engram.core.tracing import RECALL_LATENCY, RECONSOLIDATION_FAILURES, Span, get_trace
 
 logger = structlog.get_logger()
 
@@ -48,17 +49,9 @@ async def _search_axis(
     limit: int,
 ) -> tuple[str, list[tuple[UUID, float]]]:
     """Search one vector column on its own connection. Returns (axis, results)."""
-    column = _VEC_COLUMNS[axis]
     async with tenant_connection(db_pool, owner_id) as conn:
-        rows = await conn.fetch(
-            f"SELECT id, GREATEST(0.0, 1 - ({column} <=> $1)) AS score "  # noqa: S608
-            f"FROM memory_nodes "
-            f"WHERE owner_id = $2 AND is_deleted = FALSE "
-            f"ORDER BY {column} <=> $1 "
-            f"LIMIT $3",
-            vector,
-            owner_id,
-            limit,
+        rows = await memory_repo.find_by_vector_similarity(
+            conn, owner_id, vector, axis, limit=limit
         )
     return axis, [(row["id"], row["score"]) for row in rows]
 
@@ -123,10 +116,7 @@ async def _score_candidates(
     with Span(
         "read_path.convergence", component="read_path", expected_ms=1
     ):
-        rows = await conn.fetch(
-            "SELECT id, activation_level, content FROM memory_nodes WHERE id = ANY($1)",
-            node_ids,
-        )
+        rows = await memory_repo.fetch_activation_and_content(conn, node_ids)
         activations = {row["id"]: row["activation_level"] for row in rows}
         contents = {row["id"]: (row["content"] or "").lower() for row in rows}
 
@@ -265,15 +255,8 @@ async def _spreading_activation(
         expected_ms=10,
     ):
         # Hop 1: from seeds
-        rows = await conn.fetch(
-            "SELECT source_id, target_id, edge_type, weight, axis "
-            "FROM edges "
-            "WHERE owner_id = $1 AND weight > 0.0 "
-            "AND (source_id = ANY($2) OR target_id = ANY($2)) "
-            "AND axis = ANY($3)",
-            owner_id,
-            seed_ids,
-            axis_list,
+        rows = await edge_repo.fetch_edges_for_nodes(
+            conn, owner_id, seed_ids, axis_list
         )
         all_edge_rows.extend(rows)
 
@@ -288,15 +271,8 @@ async def _spreading_activation(
         # Hop 2: from newly discovered neighbors (if any)
         if hop1_neighbors:
             hop2_ids = list(hop1_neighbors)
-            rows2 = await conn.fetch(
-                "SELECT source_id, target_id, edge_type, weight, axis "
-                "FROM edges "
-                "WHERE owner_id = $1 AND weight > 0.0 "
-                "AND (source_id = ANY($2) OR target_id = ANY($2)) "
-                "AND axis = ANY($3)",
-                owner_id,
-                hop2_ids,
-                axis_list,
+            rows2 = await edge_repo.fetch_edges_for_nodes(
+                conn, owner_id, hop2_ids, axis_list
             )
             all_edge_rows.extend(rows2)
 
@@ -329,14 +305,7 @@ async def _fetch_nodes(
     if not node_ids:
         return {}
 
-    rows = await conn.fetch(
-        "SELECT id, owner_id, content, content_hash, created_at, "
-        "last_accessed, access_count, activation_level, salience, "
-        "source_type, session_id, embedding_model, embedding_dimensions, "
-        "metadata, is_deleted, dreamer_processed "
-        "FROM memory_nodes WHERE id = ANY($1)",
-        node_ids,
-    )
+    rows = await memory_repo.fetch_full_nodes(conn, node_ids)
 
     result = {}
     for row in rows:

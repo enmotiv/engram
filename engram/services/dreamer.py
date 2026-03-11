@@ -8,9 +8,10 @@ import asyncpg
 import structlog
 
 from engram.core.db import tenant_connection
-from engram.services.embedding import llm_classify
-from engram.models import AXES
 from engram.core.tracing import DREAMER_CYCLE, Span
+from engram.models import AXES
+from engram.repositories import edge_repo, memory_repo
+from engram.services.embedding import llm_classify
 
 logger = structlog.get_logger()
 
@@ -75,28 +76,17 @@ async def _find_candidates(
 ) -> list[dict]:
     """Find candidate pairs using two search strategies."""
     # Strategy 1: Content similarity via semantic vector
-    content_rows = await conn.fetch(
-        "SELECT id, GREATEST(0.0, 1 - (vec_semantic <=> $1)) AS score "
-        "FROM memory_nodes "
-        "WHERE owner_id = $2 AND id != $3 AND is_deleted = FALSE "
-        "ORDER BY vec_semantic <=> $1 LIMIT 15",
-        vectors["semantic"],
-        owner_id,
-        memory_id,
+    content_rows = await memory_repo.find_by_vector_similarity(
+        conn, owner_id, vectors["semantic"], "semantic",
+        limit=15, exclude_id=memory_id,
     )
 
     # Strategy 2: Per-axis similarity
     axis_candidates: dict[UUID, float] = {}
     for axis in AXES:
-        col = f"vec_{axis}"
-        rows = await conn.fetch(
-            f"SELECT id, GREATEST(0.0, 1 - ({col} <=> $1)) AS score "  # noqa: S608
-            f"FROM memory_nodes "
-            f"WHERE owner_id = $2 AND id != $3 AND is_deleted = FALSE "
-            f"ORDER BY {col} <=> $1 LIMIT 5",
-            vectors[axis],
-            owner_id,
-            memory_id,
+        rows = await memory_repo.find_by_vector_similarity(
+            conn, owner_id, vectors[axis], axis,
+            limit=5, exclude_id=memory_id,
         )
         for row in rows:
             nid = row["id"]
@@ -173,10 +163,6 @@ async def _store_edges(
     classification: dict[str, list[dict]],
 ) -> int:
     """Store classified edges. Returns count of edges created/updated."""
-    # Enforce consistent source < target ordering
-    src = min(source_id, target_id)
-    tgt = max(source_id, target_id)
-
     count = 0
     for axis, edges in classification.items():
         if axis not in _VALID_AXES:
@@ -196,24 +182,17 @@ async def _store_edges(
             if weight <= 0.3:
                 continue
 
-            try:
-                await conn.execute(
-                    "INSERT INTO edges "
-                    "(id, owner_id, source_id, target_id, edge_type, axis, weight) "
-                    "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6) "
-                    "ON CONFLICT (owner_id, source_id, target_id, edge_type, axis) "
-                    "DO UPDATE SET weight = GREATEST(edges.weight, $6), "
-                    "updated_at = NOW()",
-                    owner_id,
-                    src,
-                    tgt,
-                    etype,
-                    axis,
-                    weight,
-                )
+            success = await edge_repo.upsert_edge(
+                conn,
+                owner_id=owner_id,
+                source_id=source_id,
+                target_id=target_id,
+                edge_type=etype,
+                axis=axis,
+                weight=weight,
+            )
+            if success:
                 count += 1
-            except asyncpg.CheckViolationError:
-                pass  # invalid edge_type or axis rejected by DB CHECK
     return count
 
 
@@ -233,16 +212,7 @@ async def process_new_memories(
 
     # Fetch unprocessed memories (with vectors for candidate search)
     async with tenant_connection(db_pool, owner_id) as conn:
-        unprocessed = await conn.fetch(
-            "SELECT id, content, "
-            "vec_temporal, vec_emotional, vec_semantic, "
-            "vec_sensory, vec_action, vec_procedural "
-            "FROM memory_nodes "
-            "WHERE owner_id = $1 AND dreamer_processed = FALSE "
-            "AND is_deleted = FALSE "
-            "ORDER BY created_at ASC",
-            owner_id,
-        )
+        unprocessed = await memory_repo.fetch_unprocessed(conn, owner_id)
 
     MAX_EDGES_PER_NODE = 20
 
@@ -252,19 +222,12 @@ async def process_new_memories(
 
         # Skip if this node already has enough edges
         async with tenant_connection(db_pool, owner_id) as conn:
-            existing_edge_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM edges "
-                "WHERE owner_id = $1 AND (source_id = $2 OR target_id = $2)",
-                owner_id,
-                mem_id,
+            existing_edge_count = await edge_repo.count_edges_for_node(
+                conn, owner_id, mem_id
             )
         if existing_edge_count >= MAX_EDGES_PER_NODE:
             async with tenant_connection(db_pool, owner_id) as conn:
-                await conn.execute(
-                    "UPDATE memory_nodes SET dreamer_processed = TRUE "
-                    "WHERE id = $1",
-                    mem_id,
-                )
+                await memory_repo.mark_processed(conn, mem_id)
             stats["memories_processed"] += 1
             continue
 
@@ -272,19 +235,12 @@ async def process_new_memories(
         async with tenant_connection(db_pool, owner_id) as conn:
             candidates = await _find_candidates(conn, mem_id, owner_id, vectors)
             if not candidates:
-                await conn.execute(
-                    "UPDATE memory_nodes SET dreamer_processed = TRUE "
-                    "WHERE id = $1",
-                    mem_id,
-                )
+                await memory_repo.mark_processed(conn, mem_id)
                 stats["memories_processed"] += 1
                 continue
 
             cand_ids = [c["id"] for c in candidates]
-            content_rows = await conn.fetch(
-                "SELECT id, content FROM memory_nodes WHERE id = ANY($1)",
-                cand_ids,
-            )
+            content_rows = await memory_repo.fetch_content_by_ids(conn, cand_ids)
 
         # Classify all pairs in parallel (slow LLM calls, no DB connection held)
         cand_contents = {row["id"]: row["content"] for row in content_rows}
@@ -328,11 +284,7 @@ async def process_new_memories(
                 )
                 stats["edges_created"] += edges
 
-            await conn.execute(
-                "UPDATE memory_nodes SET dreamer_processed = TRUE "
-                "WHERE id = $1",
-                mem_id,
-            )
+            await memory_repo.mark_processed(conn, mem_id)
         stats["memories_processed"] += 1
 
     logger.info(
@@ -352,16 +304,7 @@ async def decay_activations(
 ) -> int:
     """Decay activation of nodes not accessed in 24 hours. Returns count."""
     async with tenant_connection(db_pool, owner_id) as conn:
-        result = await conn.execute(
-            "UPDATE memory_nodes SET "
-            "  activation_level = GREATEST(0.01, activation_level * 0.95) "
-            "WHERE owner_id = $1 "
-            "  AND last_accessed < NOW() - INTERVAL '24 hours' "
-            "  AND is_deleted = FALSE "
-            "  AND NOT (metadata->>'pinned' = 'true')",
-            owner_id,
-        )
-    count = _parse_update_count(result)
+        count = await memory_repo.decay_activations(conn, owner_id)
     logger.info(
         "dreamer.activation_decay", component="dreamer", decayed=count
     )
@@ -377,14 +320,7 @@ async def decay_edge_weights(
 ) -> int:
     """Decay edges not co-activated in 30 days. Returns count."""
     async with tenant_connection(db_pool, owner_id) as conn:
-        result = await conn.execute(
-            "UPDATE edges SET weight = weight * 0.9 "
-            "WHERE owner_id = $1 "
-            "  AND updated_at < NOW() - INTERVAL '30 days' "
-            "  AND edge_type != 'structural'",
-            owner_id,
-        )
-    count = _parse_update_count(result)
+        count = await edge_repo.decay_weights(conn, owner_id)
     logger.info(
         "dreamer.edge_decay", component="dreamer", decayed=count
     )
@@ -401,13 +337,7 @@ async def _transfer_edges(
     to_id: UUID,
 ) -> int:
     """Transfer edges from deleted node to survivor. Returns count."""
-    edges = await conn.fetch(
-        "SELECT source_id, target_id, edge_type, axis, weight "
-        "FROM edges "
-        "WHERE owner_id = $1 AND (source_id = $2 OR target_id = $2)",
-        owner_id,
-        from_id,
-    )
+    edges = await edge_repo.fetch_edges_for_transfer(conn, owner_id, from_id)
 
     transferred = 0
     for edge in edges:
@@ -418,33 +348,20 @@ async def _transfer_edges(
         if new_source == new_target:
             continue
 
-        # Enforce min/max ordering
-        src = min(new_source, new_target)
-        tgt = max(new_source, new_target)
-
-        await conn.execute(
-            "INSERT INTO edges "
-            "(id, owner_id, source_id, target_id, edge_type, axis, weight) "
-            "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6) "
-            "ON CONFLICT (owner_id, source_id, target_id, edge_type, axis) "
-            "DO UPDATE SET weight = GREATEST(edges.weight, $6), "
-            "updated_at = NOW()",
-            owner_id,
-            src,
-            tgt,
-            edge["edge_type"],
-            edge["axis"],
-            edge["weight"],
+        success = await edge_repo.upsert_edge(
+            conn,
+            owner_id=owner_id,
+            source_id=new_source,
+            target_id=new_target,
+            edge_type=edge["edge_type"],
+            axis=edge["axis"],
+            weight=edge["weight"],
         )
-        transferred += 1
+        if success:
+            transferred += 1
 
     # Delete original edges pointing to from_id
-    await conn.execute(
-        "DELETE FROM edges "
-        "WHERE owner_id = $1 AND (source_id = $2 OR target_id = $2)",
-        owner_id,
-        from_id,
-    )
+    await edge_repo.delete_edges_for_node(conn, owner_id, from_id)
 
     return transferred
 
@@ -457,26 +374,7 @@ async def dedup_memories(
     stats = {"pairs_found": 0, "nodes_deleted": 0, "edges_transferred": 0}
 
     async with tenant_connection(db_pool, owner_id) as conn:
-        pairs = await conn.fetch(
-            "WITH sample AS ("
-            "  SELECT id, vec_semantic, activation_level"
-            "  FROM memory_nodes"
-            "  WHERE owner_id = $1 AND is_deleted = FALSE"
-            "  ORDER BY RANDOM() LIMIT 200"
-            ") "
-            "SELECT s.id AS node_a, m.id AS node_b,"
-            "  1 - (s.vec_semantic <=> m.vec_semantic) AS sim,"
-            "  s.activation_level AS act_a,"
-            "  m.activation_level AS act_b "
-            "FROM sample s "
-            "JOIN memory_nodes m "
-            "  ON m.owner_id = $1"
-            "  AND m.id > s.id"
-            "  AND m.is_deleted = FALSE"
-            "  AND 1 - (s.vec_semantic <=> m.vec_semantic) > 0.95 "
-            "LIMIT 50",
-            owner_id,
-        )
+        pairs = await memory_repo.find_near_duplicates(conn, owner_id)
 
         stats["pairs_found"] = len(pairs)
 
@@ -491,11 +389,10 @@ async def dedup_memories(
             transferred = await _transfer_edges(conn, owner_id, deleted, survivor)
             stats["edges_transferred"] += transferred
 
-            # Soft-delete
-            await conn.execute(
-                "UPDATE memory_nodes SET is_deleted = TRUE WHERE id = $1",
-                deleted,
-            )
+            # Soft-delete (using direct execute since we don't need owner_id check
+            # within an already-tenant-scoped connection and soft_delete expects
+            # the owner_id param for RLS)
+            await memory_repo.soft_delete(conn, deleted, owner_id)
             stats["nodes_deleted"] += 1
 
             logger.info(
@@ -519,12 +416,7 @@ async def prune_edges(
 ) -> int:
     """Delete edges with weight < 0.15. Returns count."""
     async with tenant_connection(db_pool, owner_id) as conn:
-        result = await conn.execute(
-            "DELETE FROM edges WHERE owner_id = $1 AND weight < 0.15 "
-            "AND edge_type != 'structural'",
-            owner_id,
-        )
-    count = _parse_delete_count(result)
+        count = await edge_repo.prune_weak(conn, owner_id)
     logger.info("dreamer.prune_complete", component="dreamer", pruned=count)
     return count
 

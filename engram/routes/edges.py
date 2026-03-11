@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from engram.auth import get_owner_id
 from engram.core.db import tenant_connection
 from engram.core.errors import EngramError
+from engram.repositories import edge_repo, memory_repo
 
 logger = structlog.get_logger()
 
@@ -39,7 +40,6 @@ async def create_edge(
     Only structural edges can be created via this endpoint.
     Dreamer-managed edge types are rejected.
     """
-    # Enforce consistent source < target ordering
     src = min(body.source_id, body.target_id)
     tgt = max(body.source_id, body.target_id)
 
@@ -49,11 +49,8 @@ async def create_edge(
     db = request.app.state.db
     async with tenant_connection(db, owner_id) as conn:
         # Verify both nodes exist
-        count = await conn.fetchval(
-            "SELECT COUNT(*) FROM memory_nodes "
-            "WHERE owner_id = $1 AND id = ANY($2) AND is_deleted = FALSE",
-            owner_id,
-            [src, tgt],
+        count = await memory_repo.count_active_nodes(
+            conn, owner_id, [src, tgt]
         )
         if count < 2:
             raise EngramError(
@@ -62,19 +59,14 @@ async def create_edge(
                 404,
             )
 
-        await conn.execute(
-            "INSERT INTO edges "
-            "(id, owner_id, source_id, target_id, edge_type, axis, weight) "
-            "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6) "
-            "ON CONFLICT (owner_id, source_id, target_id, edge_type, axis) "
-            "DO UPDATE SET weight = GREATEST(edges.weight, $6), "
-            "updated_at = NOW()",
-            owner_id,
-            src,
-            tgt,
-            body.edge_type,
-            body.axis,
-            body.weight,
+        await edge_repo.upsert_edge(
+            conn,
+            owner_id=owner_id,
+            source_id=src,
+            target_id=tgt,
+            edge_type=body.edge_type,
+            axis=body.axis,
+            weight=body.weight,
         )
 
     return {
