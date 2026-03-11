@@ -7,9 +7,9 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from engram.auth import get_owner_id
-from engram.db import tenant_connection
-from engram.embeddings import get_client
-from engram.tracing import AVG_ACTIVATION, EDGES_TOTAL, NODES_TOTAL
+from engram.core.db import tenant_connection
+from engram.services.embedding import get_client
+from engram.core.tracing import AVG_ACTIVATION, EDGES_TOTAL, NODES_TOTAL
 
 logger = structlog.get_logger()
 
@@ -101,7 +101,7 @@ async def trigger_dreamer(
     owner_id: UUID = Depends(get_owner_id),  # noqa: B008
 ) -> dict:
     """Manually trigger a full Dreamer cycle for this owner."""
-    from engram.dreamer import run_cycle
+    from engram.services.dreamer import run_cycle
 
     result = await run_cycle(request.app.state.db, owner_id)
     return {"data": result}
@@ -113,7 +113,7 @@ async def trigger_classification(
     owner_id: UUID = Depends(get_owner_id),  # noqa: B008
 ) -> dict:
     """Manually trigger edge classification for unprocessed memories."""
-    from engram.dreamer import process_new_memories
+    from engram.services.dreamer import process_new_memories
 
     result = await process_new_memories(request.app.state.db, owner_id)
     return {"data": result}

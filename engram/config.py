@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     engram_log_level: str = "INFO"
     engram_extensions: str = ""
     engram_retrieval_exclude_tags: str = ""
+    engram_admin_secret: str = ""
 
     @property
     def exclude_tags_set(self) -> set[str]:

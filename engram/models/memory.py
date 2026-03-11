@@ -1,40 +1,14 @@
-"""Pydantic models for Engram API contracts."""
+"""Memory node models: schemas, dimension prefixes, axes."""
 
-import hashlib
-import secrets
+from __future__ import annotations
+
 from datetime import datetime
-from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
-from uuid_extensions import uuid7
 
-
-class SourceType(StrEnum):
-    CONVERSATION = "conversation"
-    EVENT = "event"
-    OBSERVATION = "observation"
-    CORRECTION = "correction"
-    SYSTEM = "system"
-
-
-class AxisName(StrEnum):
-    TEMPORAL = "temporal"
-    EMOTIONAL = "emotional"
-    SEMANTIC = "semantic"
-    SENSORY = "sensory"
-    ACTION = "action"
-    PROCEDURAL = "procedural"
-
-
-class EdgeType(StrEnum):
-    EXCITATORY = "excitatory"
-    INHIBITORY = "inhibitory"
-    ASSOCIATIVE = "associative"
-    TEMPORAL = "temporal"
-    MODULATORY = "modulatory"
-    STRUCTURAL = "structural"
+from engram.models.common import ConfidenceLevel, SourceType
 
 
 DIMENSION_PREFIXES: dict[str, str] = {
@@ -67,13 +41,6 @@ class CreateMemoryRequest(BaseModel):
     source_type: SourceType
     session_id: UUID | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class RecallRequest(BaseModel):
-    cue: str = Field(..., max_length=4096, min_length=1)
-    top_k: int = Field(default=5, ge=1, le=20)
-    min_convergence: float = Field(default=0.0, ge=0.0)
-    include_edges: bool = False
 
 
 # --- Internal Models ---
@@ -151,60 +118,3 @@ class MemoryResponse(BaseModel):
     access_count: int
     session_id: str | None = None
     source_type: SourceType
-
-
-class EdgeResponse(BaseModel):
-    source_id: str
-    target_id: str
-    edge_type: EdgeType
-    axis: AxisName
-    weight: float = Field(..., ge=0.0, le=1.0)
-
-
-class ConfidenceLevel(StrEnum):
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-
-
-class RecallResponse(BaseModel):
-    memories: list[MemoryResponse]
-    confidence: ConfidenceLevel
-    edges: list[EdgeResponse] = Field(default_factory=list)
-
-
-class ErrorResponse(BaseModel):
-    code: str
-    message: str
-    status: int
-    correlation_id: str
-    existing_id: str | None = None
-
-
-# --- Helpers ---
-
-
-def generate_node_id() -> UUID:
-    """Generate a time-sortable UUID v7 for memory node IDs."""
-    return uuid7()
-
-
-def generate_correlation_id() -> str:
-    """Generate a correlation ID for request tracing: req_ + 12 hex chars."""
-    return f"req_{secrets.token_hex(6)}"
-
-
-def compute_content_hash(content: str) -> str:
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
-
-
-def compute_confidence(
-    top_result: dict[str, float],
-) -> ConfidenceLevel:
-    dims = top_result.get("dims_matched", 0)
-    conv = top_result.get("convergence_score", 0.0)
-    if dims >= 4 and conv >= 3.0:
-        return ConfidenceLevel.HIGH
-    elif dims >= 2 or conv >= 1.5:
-        return ConfidenceLevel.MEDIUM
-    return ConfidenceLevel.LOW

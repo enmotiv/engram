@@ -12,8 +12,8 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from engram.auth import get_owner_id
-from engram.db import tenant_connection
-from engram.errors import EngramError
+from engram.core.db import tenant_connection
+from engram.core.errors import EngramError
 
 logger = structlog.get_logger()
 

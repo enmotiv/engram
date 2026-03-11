@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 async def startup(ctx: dict) -> None:
     """Called once when the worker starts. Initialize DB pool."""
-    from engram.db import get_pool
+    from engram.core.db import get_pool
 
     ctx["db_pool"] = await get_pool(settings.database_url)
     logger.info("dreamer.worker_started")
@@ -22,7 +22,7 @@ async def startup(ctx: dict) -> None:
 
 async def shutdown(ctx: dict) -> None:
     """Called once when the worker stops. Close DB pool."""
-    from engram.db import close_pool
+    from engram.core.db import close_pool
 
     pool = ctx.get("db_pool")
     if pool:
@@ -39,7 +39,7 @@ async def classify_new_memories(ctx: dict, owner_id: str) -> dict:
     Enqueued by the write path after every successful INSERT.
     Idempotent — safe to enqueue multiple times for the same owner.
     """
-    from engram.dreamer import process_new_memories
+    from engram.services.dreamer import process_new_memories
 
     pool = ctx["db_pool"]
     return await process_new_memories(pool, UUID(owner_id))
@@ -54,7 +54,7 @@ async def classify_all_unprocessed(ctx: dict) -> dict:
     Catches memories that weren't classified event-driven (e.g. bulk imports,
     failed enqueue, or duplicates that were later re-inserted).
     """
-    from engram.dreamer import process_new_memories
+    from engram.services.dreamer import process_new_memories
 
     pool = ctx["db_pool"]
     owners = await _get_all_owner_ids(pool)
@@ -73,7 +73,7 @@ async def classify_all_unprocessed(ctx: dict) -> dict:
 
 async def decay_all_activations(ctx: dict) -> dict:
     """Hourly: decay activation on all owners."""
-    from engram.dreamer import decay_activations
+    from engram.services.dreamer import decay_activations
 
     pool = ctx["db_pool"]
     owners = await _get_all_owner_ids(pool)
@@ -86,7 +86,7 @@ async def decay_all_activations(ctx: dict) -> dict:
 
 async def decay_all_edge_weights(ctx: dict) -> dict:
     """Weekly: decay stale edge weights on all owners."""
-    from engram.dreamer import decay_edge_weights
+    from engram.services.dreamer import decay_edge_weights
 
     pool = ctx["db_pool"]
     owners = await _get_all_owner_ids(pool)
@@ -99,7 +99,7 @@ async def decay_all_edge_weights(ctx: dict) -> dict:
 
 async def dedup_all_memories(ctx: dict) -> dict:
     """Weekly: find and merge near-duplicate memories on all owners."""
-    from engram.dreamer import dedup_memories
+    from engram.services.dreamer import dedup_memories
 
     pool = ctx["db_pool"]
     owners = await _get_all_owner_ids(pool)
@@ -117,8 +117,8 @@ async def dedup_all_memories(ctx: dict) -> dict:
 
 
 async def prune_all_edges(ctx: dict) -> dict:
-    """Monthly: remove edges with weight < 0.05 on all owners."""
-    from engram.dreamer import prune_edges
+    """Monthly: remove edges with weight < 0.15 on all owners."""
+    from engram.services.dreamer import prune_edges
 
     pool = ctx["db_pool"]
     owners = await _get_all_owner_ids(pool)

@@ -7,8 +7,8 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from engram.auth import get_owner_id
 from engram.models import RecallRequest
-from engram.read_path import recall_memories
-from engram.tracing import TraceCollector, set_trace
+from engram.services.read import recall_memories
+from engram.core.tracing import TraceCollector, set_trace
 
 logger = structlog.get_logger()
 

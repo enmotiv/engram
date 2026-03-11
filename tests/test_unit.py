@@ -274,14 +274,14 @@ class TestActivationFormulas:
 class TestVectorValidation:
     def test_valid_vectors(self):
         from engram.models import AXES
-        from engram.write_path import _validate_vectors
+        from engram.services.write import _validate_vectors
 
         vectors = {axis: [0.1] * 1024 for axis in AXES}
         _validate_vectors(vectors)  # should not raise
 
     def test_wrong_dimensions(self):
         from engram.models import AXES
-        from engram.write_path import _validate_vectors
+        from engram.services.write import _validate_vectors
 
         vectors = {axis: [0.1] * 512 for axis in AXES}
         with pytest.raises(ValueError, match="dims"):
@@ -289,7 +289,7 @@ class TestVectorValidation:
 
     def test_non_finite_values(self):
         from engram.models import AXES
-        from engram.write_path import _validate_vectors
+        from engram.services.write import _validate_vectors
 
         vectors = {axis: [0.1] * 1024 for axis in AXES}
         vectors["semantic"][0] = float("inf")
@@ -371,7 +371,7 @@ class TestEnums:
 
         expected = {
             "excitatory", "inhibitory", "associative",
-            "temporal", "modulatory",
+            "temporal", "modulatory", "structural",
         }
         assert {e.value for e in EdgeType} == expected
 
@@ -418,19 +418,19 @@ class TestEngramError:
 
 class TestParseHelpers:
     def test_parse_update_count(self):
-        from engram.dreamer import _parse_update_count
+        from engram.services.dreamer import _parse_update_count
 
         assert _parse_update_count("UPDATE 5") == 5
         assert _parse_update_count("UPDATE 0") == 0
 
     def test_parse_delete_count(self):
-        from engram.dreamer import _parse_delete_count
+        from engram.services.dreamer import _parse_delete_count
 
         assert _parse_delete_count("DELETE 3") == 3
         assert _parse_delete_count("DELETE 0") == 0
 
     def test_parse_invalid(self):
-        from engram.dreamer import _parse_update_count
+        from engram.services.dreamer import _parse_update_count
 
         assert _parse_update_count("") == 0
         assert _parse_update_count("INVALID") == 0

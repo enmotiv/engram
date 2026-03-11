@@ -184,19 +184,19 @@ def mock_embeddings():
 
     with (
         patch(
-            "engram.write_path.embed_six_dimensions",
+            "engram.services.write.embed_six_dimensions",
             side_effect=mock_embed,
         ),
         patch(
-            "engram.write_path.compute_salience",
+            "engram.services.write.compute_salience",
             AsyncMock(return_value=0.5),
         ),
         patch(
-            "engram.read_path.embed_six_dimensions",
+            "engram.services.read.embed_six_dimensions",
             side_effect=mock_embed,
         ),
         patch(
-            "engram.dreamer.llm_classify",
+            "engram.services.dreamer.llm_classify",
             AsyncMock(return_value=classify_json),
         ),
         patch(

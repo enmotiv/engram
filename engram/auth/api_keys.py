@@ -1,5 +1,7 @@
 """API key authentication and per-key rate limiting."""
 
+from __future__ import annotations
+
 import hashlib
 import time
 from collections import defaultdict
@@ -9,8 +11,8 @@ import asyncpg
 import structlog
 from fastapi import Request
 
-from engram.errors import EngramError
-from engram.tracing import set_correlation_id, set_owner_id
+from engram.core.errors import EngramError
+from engram.core.tracing import set_correlation_id, set_owner_id
 
 logger = structlog.get_logger()
 
