@@ -35,6 +35,7 @@ async def recall(
             top_k=body.top_k,
             min_convergence=body.min_convergence,
             include_edges=body.include_edges,
+            metadata_type=body.metadata_type,
         )
     finally:
         set_trace(None)

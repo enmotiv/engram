@@ -12,6 +12,11 @@ class RecallRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=20)
     min_convergence: float = Field(default=0.0, ge=0.0)
     include_edges: bool = False
+    metadata_type: str | None = Field(
+        default=None,
+        description="Filter to only return nodes with this metadata.type value. "
+        "Overrides ENGRAM_RETRIEVAL_EXCLUDE_TAGS when set.",
+    )
 
 
 class RecallResponse(BaseModel):

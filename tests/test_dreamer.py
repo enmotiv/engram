@@ -19,7 +19,7 @@ async def test_process_new_memories(db_pool, owner_a, seeded_memories):
 
 async def test_classify_pair():
     """Classification should return valid axis-keyed dict."""
-    from engram.dreamer import _classify_pair
+    from engram.services.dreamer import _classify_pair
 
     result = await _classify_pair(
         "User likes Python", "User prefers dark mode"

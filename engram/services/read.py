@@ -337,10 +337,32 @@ async def _fetch_nodes(
 def _apply_post_filter(
     ranked: list[dict],
     nodes_by_id: dict[UUID, MemoryNode],
+    *,
+    include_type: str | None = None,
 ) -> list[dict]:
-    """Remove nodes with excluded metadata tags from final results."""
-    exclude = settings.exclude_tags_set
+    """Filter nodes by metadata type.
+
+    When *include_type* is set, ONLY nodes with that metadata.type are kept
+    (the global exclude list is ignored).  Otherwise the global
+    ENGRAM_RETRIEVAL_EXCLUDE_TAGS exclusion applies as before.
+    """
     tc = get_trace()
+
+    if include_type:
+        filtered = [
+            n
+            for n in ranked
+            if n["id"] in nodes_by_id
+            and nodes_by_id[n["id"]].metadata.get("type") == include_type
+        ]
+        if tc:
+            tc.post_filter = {
+                "nodes_excluded": len(ranked) - len(filtered),
+                "include_type": include_type,
+            }
+        return filtered
+
+    exclude = settings.exclude_tags_set
 
     if not exclude:
         if tc:
@@ -370,6 +392,7 @@ async def recall_memories(
     top_k: int = 5,
     min_convergence: float = 0.0,
     include_edges: bool = False,
+    metadata_type: str | None = None,
 ) -> RecallResponse:
     """Full read path. Returns RecallResponse."""
     with Span(
@@ -451,7 +474,7 @@ async def recall_memories(
         ranked.sort(key=lambda x: x["final_score"], reverse=True)
 
         # Post-filter
-        filtered = _apply_post_filter(ranked, nodes_by_id)
+        filtered = _apply_post_filter(ranked, nodes_by_id, include_type=metadata_type)
 
         # Min convergence filter
         if min_convergence > 0.0:

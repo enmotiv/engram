@@ -41,6 +41,7 @@ services:
     environment:
       DATABASE_URL: postgresql://engram:${DB_PASSWORD:-engram_dev}@db:5432/engram
       REDIS_URL: redis://redis:6379/0
+      ENGRAM_RETRIEVAL_EXCLUDE_TAGS: entity-summary
 
   engram-dreamer:
     build: .
