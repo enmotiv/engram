@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from uuid import UUID
 
 import asyncpg
@@ -129,12 +130,7 @@ async def _classify_pair(
     )
     try:
         raw = await llm_classify(prompt)
-        clean = raw.strip()
-        if clean.startswith("```"):
-            clean = clean.split("\n", 1)[1]
-        if clean.endswith("```"):
-            clean = clean.rsplit("```", 1)[0]
-        result = json.loads(clean.strip())
+        result = _extract_json(raw)
         logger.debug(
             "dreamer.classify_pair",
             component="dreamer",
@@ -143,13 +139,42 @@ async def _classify_pair(
             },
         )
         return result
-    except (json.JSONDecodeError, IndexError, KeyError, AttributeError):
+    except (json.JSONDecodeError, IndexError, KeyError, AttributeError, ValueError):
         logger.warning(
             "dreamer.classify_parse_failed",
             component="dreamer",
             raw=raw[:200] if raw else "",
         )
         return {}
+
+
+def _extract_json(raw: str) -> dict:
+    """Extract JSON from LLM response, handling markdown fences and surrounding text."""
+    # Try 1: direct parse (ideal case)
+    clean = raw.strip()
+    try:
+        return json.loads(clean)
+    except json.JSONDecodeError:
+        pass
+
+    # Try 2: extract from markdown code fence (```json ... ``` or ``` ... ```)
+    fence_match = re.search(r"```(?:json)?\s*\n(.*?)```", clean, re.DOTALL)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # Try 3: find the first { ... } block (greedy from first { to last })
+    first_brace = clean.find("{")
+    last_brace = clean.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        try:
+            return json.loads(clean[first_brace:last_brace + 1])
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"No valid JSON found in response")
 
 
 # --- Edge Storage ---

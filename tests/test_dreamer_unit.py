@@ -133,6 +133,64 @@ class TestStoreEdgesValidation:
         assert count == 1
 
 
+class TestExtractJson:
+    """Test _extract_json helper for robust LLM response parsing."""
+
+    def test_plain_json(self):
+        from engram.services.dreamer import _extract_json
+
+        raw = '{"temporal": [], "semantic": [{"type": "associative", "weight": 0.7}]}'
+        result = _extract_json(raw)
+        assert result["semantic"][0]["weight"] == 0.7
+
+    def test_markdown_fence(self):
+        from engram.services.dreamer import _extract_json
+
+        raw = '```json\n{"temporal": [], "semantic": []}\n```'
+        result = _extract_json(raw)
+        assert isinstance(result, dict)
+
+    def test_text_before_and_after_fence(self):
+        from engram.services.dreamer import _extract_json
+
+        raw = (
+            "To classify the relationship between MEMORY A and MEMORY B, "
+            "I need to analyze their content.\n\n"
+            "```json\n"
+            '{"temporal": [], "emotional": [], "semantic": [{"type": "associative", "weight": 0.5}], '
+            '"sensory": [], "action": [], "procedural": []}\n'
+            "```\n\n"
+            "The memories share a specific entity reference."
+        )
+        result = _extract_json(raw)
+        assert len(result["semantic"]) == 1
+
+    def test_text_with_bare_json(self):
+        from engram.services.dreamer import _extract_json
+
+        raw = (
+            "Here is the classification:\n\n"
+            '{"temporal": [], "emotional": [], "semantic": [], '
+            '"sensory": [], "action": [], "procedural": []}\n\n'
+            "Most axes show no relationship."
+        )
+        result = _extract_json(raw)
+        assert result["temporal"] == []
+
+    def test_no_json_raises(self):
+        from engram.services.dreamer import _extract_json
+
+        with pytest.raises(ValueError):
+            _extract_json("This response contains no JSON at all.")
+
+    def test_fence_without_language_tag(self):
+        from engram.services.dreamer import _extract_json
+
+        raw = '```\n{"temporal": [], "semantic": []}\n```'
+        result = _extract_json(raw)
+        assert isinstance(result, dict)
+
+
 class TestClassifyPair:
     """Test _classify_pair JSON parsing."""
 
@@ -163,6 +221,23 @@ class TestClassifyPair:
         with patch("engram.services.dreamer.llm_classify", AsyncMock(return_value=fenced)):
             result = await _classify_pair("new", "old")
             assert isinstance(result, dict)
+
+    @pytest.mark.asyncio
+    async def test_handles_text_wrapped_json(self):
+        from engram.services.dreamer import _classify_pair
+
+        wrapped = (
+            "Let me analyze these memories.\n\n"
+            "```json\n"
+            '{"temporal": [], "emotional": [], "semantic": [], '
+            '"sensory": [], "action": [], "procedural": []}\n'
+            "```\n\nNo meaningful edges found."
+        )
+
+        with patch("engram.services.dreamer.llm_classify", AsyncMock(return_value=wrapped)):
+            result = await _classify_pair("new", "old")
+            assert isinstance(result, dict)
+            assert result.get("temporal") == []
 
     @pytest.mark.asyncio
     async def test_returns_empty_on_invalid_json(self):
