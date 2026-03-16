@@ -38,8 +38,15 @@ async def encode_memory(
     source_type: SourceType,
     session_id: UUID | None = None,
     metadata: dict | None = None,
+    upsert: bool = False,
 ) -> dict:
-    """Full write path. Returns {id, salience} or {duplicate, existing_id}."""
+    """Full write path.
+
+    Returns:
+        {id, salience}              — new memory created
+        {duplicate, existing_id}    — content exists, upsert=False
+        {id, salience, updated}     — content exists, metadata merged (upsert=True)
+    """
     metadata = metadata or {}
     content_hash = compute_content_hash(content)
 
@@ -56,6 +63,29 @@ async def encode_memory(
                     conn, owner_id, content_hash
                 )
         if existing:
+            if upsert and metadata:
+                # Merge new metadata into existing memory
+                with Span(
+                    "write_path.upsert", component="write_path", expected_ms=10
+                ):
+                    async with tenant_connection(db_pool, owner_id) as conn:
+                        await memory_repo.upsert_metadata(
+                            conn,
+                            existing,
+                            owner_id,
+                            metadata,
+                            source_type=source_type.value,
+                        )
+                logger.info(
+                    "memory.upserted",
+                    component="write_path",
+                    node_id=str(existing),
+                )
+                return {
+                    "id": str(existing),
+                    "salience": 0.0,
+                    "updated": True,
+                }
             return {"duplicate": True, "existing_id": str(existing)}
 
         # Phase B: embed + salience (no DB connection held)
@@ -88,10 +118,27 @@ async def encode_memory(
                         metadata=metadata,
                     )
                 except asyncpg.UniqueViolationError:
-                    existing = await memory_repo.find_by_content_hash(
+                    # Race condition: another request inserted first
+                    race_existing = await memory_repo.find_by_content_hash(
                         conn, owner_id, content_hash
                     )
-                    return {"duplicate": True, "existing_id": str(existing)}
+                    if upsert and metadata and race_existing:
+                        await memory_repo.upsert_metadata(
+                            conn,
+                            race_existing,
+                            owner_id,
+                            metadata,
+                            source_type=source_type.value,
+                        )
+                        return {
+                            "id": str(race_existing),
+                            "salience": salience,
+                            "updated": True,
+                        }
+                    return {
+                        "duplicate": True,
+                        "existing_id": str(race_existing),
+                    }
 
     logger.info(
         "memory.created",

@@ -260,6 +260,115 @@ async def test_delete_memory_not_found(client, owner_a):
     assert response.status_code == 404
 
 
+async def test_upsert_merges_metadata(client, owner_a):
+    """When upsert=true, duplicate content merges metadata instead of 409."""
+    _, key = owner_a
+    content = "Write path test: upsert metadata merge"
+
+    # First write — ingested stage
+    r1 = await client.post(
+        "/v1/memories?upsert=true",
+        json={
+            "content": content,
+            "source_type": "observation",
+            "metadata": {
+                "pipeline_stage": "ingested",
+                "origin_process": "store_observation",
+            },
+        },
+        headers=auth_headers(key),
+    )
+    assert r1.status_code == 201
+    node_id = r1.json()["data"]["id"]
+
+    # Second write — same content, upsert merges metadata
+    r2 = await client.post(
+        "/v1/memories?upsert=true",
+        json={
+            "content": content,
+            "source_type": "observation",
+            "metadata": {
+                "pipeline_stage": "classified",
+                "origin_process": "process_nomination",
+                "dimension_scores": {"impact": 0.8},
+            },
+        },
+        headers=auth_headers(key),
+    )
+    assert r2.status_code == 201
+    data = r2.json()["data"]
+    assert data["id"] == node_id  # same memory
+    assert data["updated"] is True
+
+    # Verify merged metadata via GET
+    r3 = await client.get(
+        f"/v1/memories/{node_id}",
+        headers=auth_headers(key),
+    )
+    meta = r3.json()["data"]["metadata"]
+    assert meta["pipeline_stage"] == "classified"  # overwritten
+    assert meta["origin_process"] == "process_nomination"  # overwritten
+    assert meta["dimension_scores"] == {"impact": 0.8}  # added
+
+
+async def test_upsert_false_still_409(client, owner_a):
+    """Without upsert=true, duplicate content still returns 409."""
+    _, key = owner_a
+    content = "Write path test: upsert false still 409"
+
+    r1 = await client.post(
+        "/v1/memories",
+        json={"content": content, "source_type": "conversation"},
+        headers=auth_headers(key),
+    )
+    assert r1.status_code == 201
+
+    r2 = await client.post(
+        "/v1/memories",
+        json={"content": content, "source_type": "conversation"},
+        headers=auth_headers(key),
+    )
+    assert r2.status_code == 409
+
+
+async def test_upsert_preserves_original_metadata(client, owner_a):
+    """Upsert merges — original keys not in the update are preserved."""
+    _, key = owner_a
+    content = "Write path test: upsert preserves keys"
+
+    r1 = await client.post(
+        "/v1/memories?upsert=true",
+        json={
+            "content": content,
+            "source_type": "observation",
+            "metadata": {"original_key": "preserved", "pipeline_stage": "ingested"},
+        },
+        headers=auth_headers(key),
+    )
+    assert r1.status_code == 201
+    node_id = r1.json()["data"]["id"]
+
+    r2 = await client.post(
+        "/v1/memories?upsert=true",
+        json={
+            "content": content,
+            "source_type": "observation",
+            "metadata": {"pipeline_stage": "classified", "new_key": "added"},
+        },
+        headers=auth_headers(key),
+    )
+    assert r2.status_code == 201
+
+    r3 = await client.get(
+        f"/v1/memories/{node_id}",
+        headers=auth_headers(key),
+    )
+    meta = r3.json()["data"]["metadata"]
+    assert meta["original_key"] == "preserved"  # kept
+    assert meta["pipeline_stage"] == "classified"  # updated
+    assert meta["new_key"] == "added"  # added
+
+
 async def test_delete_idempotent(client, owner_a):
     _, key = owner_a
     create = await client.post(

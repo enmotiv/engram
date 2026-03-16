@@ -6,6 +6,7 @@ from uuid import UUID
 
 import structlog
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import JSONResponse
 
 from engram.auth import get_owner_id
 from engram.core.db import tenant_connection
@@ -37,6 +38,7 @@ async def create_memory(
     body: CreateMemoryRequest,
     request: Request,
     owner_id: UUID = Depends(get_owner_id),  # noqa: B008
+    upsert: bool = Query(default=False),
 ) -> dict:
     try:
         result = await encode_memory(
@@ -46,6 +48,7 @@ async def create_memory(
             source_type=body.source_type,
             session_id=body.session_id,
             metadata=body.metadata,
+            upsert=upsert,
         )
     except ValueError:
         raise EngramError(
@@ -59,6 +62,9 @@ async def create_memory(
             409,
             existing_id=result["existing_id"],
         )
+
+    if result.get("updated"):
+        return JSONResponse(content={"data": result}, status_code=200)
 
     return {"data": result}
 

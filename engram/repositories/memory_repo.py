@@ -73,6 +73,43 @@ async def find_by_content_hash(
     )
 
 
+async def upsert_metadata(
+    conn: asyncpg.Connection,
+    memory_id: UUID,
+    owner_id: UUID,
+    metadata: dict,
+    source_type: str | None = None,
+) -> bool:
+    """Merge new metadata into an existing memory's JSONB metadata.
+
+    Uses jsonb || jsonb to merge top-level keys. New keys are added,
+    existing keys are overwritten. Returns True if a row was updated.
+    """
+    if source_type:
+        result = await conn.execute(
+            "UPDATE memory_nodes "
+            "SET metadata = metadata || $3::jsonb, "
+            "    source_type = $4, "
+            "    last_accessed = NOW() "
+            "WHERE id = $1 AND owner_id = $2 AND is_deleted = FALSE",
+            memory_id,
+            owner_id,
+            json.dumps(metadata),
+            source_type,
+        )
+    else:
+        result = await conn.execute(
+            "UPDATE memory_nodes "
+            "SET metadata = metadata || $3::jsonb, "
+            "    last_accessed = NOW() "
+            "WHERE id = $1 AND owner_id = $2 AND is_deleted = FALSE",
+            memory_id,
+            owner_id,
+            json.dumps(metadata),
+        )
+    return _parse_count(result) > 0
+
+
 async def find_by_vector_similarity(
     conn: asyncpg.Connection,
     owner_id: UUID,
