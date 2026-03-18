@@ -124,7 +124,7 @@ async def _score_candidates(
         cue_tokens = [t.lower() for t in cue.split() if len(t) >= 2]
 
         # Per-axis similarity threshold — ignore weak matches that add noise
-        _AXIS_THRESHOLD = 0.4
+        _AXIS_THRESHOLD = 0.3
 
         scored = []
         keyword_boost_count = 0
@@ -135,8 +135,8 @@ async def _score_candidates(
                 if score >= _AXIS_THRESHOLD
             }
             dims_matched = len(strong_scores)
-            if dims_matched == 0:
-                continue
+            if dims_matched < 2:
+                continue  # Need convergence across at least 2 axes
             avg_score = sum(strong_scores.values()) / dims_matched
             convergence = dims_matched * avg_score
             activation = activations.get(node_id, 0.0)
@@ -446,7 +446,7 @@ async def recall_memories(
 
         # Phase C: rank, filter, build response (no DB needed)
         # Same per-axis threshold as scoring phase
-        _AXIS_THRESHOLD = 0.4
+        _AXIS_THRESHOLD = 0.3
 
         ranked = []
         for node_id in all_ids:
