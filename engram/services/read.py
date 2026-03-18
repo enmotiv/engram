@@ -123,24 +123,33 @@ async def _score_candidates(
         # Tokenize cue for keyword matching (words >= 2 chars)
         cue_tokens = [t.lower() for t in cue.split() if len(t) >= 2]
 
+        # Per-axis similarity threshold — ignore weak matches that add noise
+        _AXIS_THRESHOLD = 0.4
+
         scored = []
         keyword_boost_count = 0
         for node_id, data in candidates.items():
-            dims_matched = len(data["scores"])
+            # Filter out weak per-axis matches before scoring
+            strong_scores = {
+                axis: score for axis, score in data["scores"].items()
+                if score >= _AXIS_THRESHOLD
+            }
+            dims_matched = len(strong_scores)
             if dims_matched == 0:
                 continue
-            avg_score = sum(data["scores"].values()) / dims_matched
+            avg_score = sum(strong_scores.values()) / dims_matched
             convergence = dims_matched * avg_score
             activation = activations.get(node_id, 0.0)
             adjusted = convergence * activation
 
             # Keyword boost: if cue tokens appear in content, boost score
+            # Dampened to prevent minor token overlap from inflating scores
             if cue_tokens:
                 content_lower = contents.get(node_id, "")
                 matched_tokens = sum(1 for t in cue_tokens if t in content_lower)
                 if matched_tokens > 0:
-                    # Boost proportional to fraction of cue tokens matched
-                    boost = 1.0 + (matched_tokens / len(cue_tokens))
+                    # 20% max boost instead of 100% — prevents single-token inflation
+                    boost = 1.0 + 0.2 * (matched_tokens / len(cue_tokens))
                     adjusted *= boost
                     keyword_boost_count += 1
 
@@ -436,6 +445,9 @@ async def recall_memories(
             nodes_by_id = await _fetch_nodes(conn, all_ids)
 
         # Phase C: rank, filter, build response (no DB needed)
+        # Same per-axis threshold as scoring phase
+        _AXIS_THRESHOLD = 0.4
+
         ranked = []
         for node_id in all_ids:
             node = nodes_by_id.get(node_id)
@@ -444,9 +456,11 @@ async def recall_memories(
 
             cand = candidates.get(node_id)
             if cand:
-                dims_matched = len(cand["scores"])
-                convergence = dims_matched * (
-                    sum(cand["scores"].values()) / dims_matched
+                strong = {a: s for a, s in cand["scores"].items() if s >= _AXIS_THRESHOLD}
+                dims_matched = len(strong)
+                convergence = (
+                    dims_matched * (sum(strong.values()) / dims_matched)
+                    if dims_matched > 0 else 0.0
                 )
                 dim_scores = cand["scores"]
                 matched = cand["matched_axes"]
