@@ -41,6 +41,10 @@ class CreateMemoryRequest(BaseModel):
     source_type: SourceType
     session_id: UUID | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    initial_activation: float | None = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Optional activation hint. If omitted, derived from source_type.",
+    )
 
 
 # --- Internal Models ---

@@ -39,6 +39,7 @@ async def encode_memory(
     session_id: UUID | None = None,
     metadata: dict | None = None,
     upsert: bool = False,
+    initial_activation: float | None = None,
 ) -> dict:
     """Full write path.
 
@@ -116,6 +117,7 @@ async def encode_memory(
                         salience=salience,
                         vectors=vectors,
                         metadata=metadata,
+                        activation_level=initial_activation,
                     )
                 except asyncpg.UniqueViolationError:
                     # Race condition: another request inserted first

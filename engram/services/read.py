@@ -118,6 +118,7 @@ async def _score_candidates(
     ):
         rows = await memory_repo.fetch_activation_and_content(conn, node_ids)
         activations = {row["id"]: row["activation_level"] for row in rows}
+        saliences = {row["id"]: row["salience"] for row in rows}
         contents = {row["id"]: (row["content"] or "").lower() for row in rows}
 
         # Tokenize cue for keyword matching (words >= 2 chars)
@@ -140,7 +141,11 @@ async def _score_candidates(
             avg_score = sum(strong_scores.values()) / dims_matched
             convergence = dims_matched * avg_score
             activation = activations.get(node_id, 0.0)
-            adjusted = convergence * activation
+
+            # Salience boost: emotionally significant memories get up to 10% boost
+            salience = saliences.get(node_id, 0.5)
+            salience_boost = 1.0 + 0.2 * (salience - 0.5)  # Range: 0.9 to 1.1
+            adjusted = convergence * activation * salience_boost
 
             # Keyword boost: if cue tokens appear in content, boost score
             # Dampened to prevent minor token overlap from inflating scores

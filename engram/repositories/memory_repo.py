@@ -7,6 +7,16 @@ from uuid import UUID
 
 import asyncpg
 
+# Default activation levels by source type — corrections are most important,
+# system metadata least. Observation is the fallback for unknown types.
+_SOURCE_ACTIVATION: dict[str, float] = {
+    "correction": 1.0,
+    "observation": 0.7,
+    "event": 0.6,
+    "conversation": 0.5,
+    "system": 0.4,
+}
+
 
 async def insert_memory(
     conn: asyncpg.Connection,
@@ -22,8 +32,14 @@ async def insert_memory(
     salience: float,
     vectors: dict[str, list[float]],
     metadata: dict | None = None,
+    activation_level: float | None = None,
 ) -> None:
     """Insert a new memory node with all 6 vectors."""
+    activation = (
+        activation_level
+        if activation_level is not None
+        else _SOURCE_ACTIVATION.get(source_type, 0.7)
+    )
     await conn.execute(
         """INSERT INTO memory_nodes (
             id, owner_id, content, content_hash, source_type,
@@ -35,10 +51,10 @@ async def insert_memory(
         ) VALUES (
             $1, $2, $3, $4, $5,
             $6, $7, $8,
-            $9, 1.0, 0,
-            $10, $11, $12,
-            $13, $14, $15,
-            $16, FALSE
+            $9, $10, 0,
+            $11, $12, $13,
+            $14, $15, $16,
+            $17, FALSE
         )""",
         node_id,
         owner_id,
@@ -49,6 +65,7 @@ async def insert_memory(
         embedding_model,
         embedding_dimensions,
         salience,
+        activation,
         vectors["temporal"],
         vectors["emotional"],
         vectors["semantic"],
@@ -146,9 +163,9 @@ async def fetch_activation_and_content(
     conn: asyncpg.Connection,
     node_ids: list[UUID],
 ) -> list[asyncpg.Record]:
-    """Fetch activation_level and content for scoring."""
+    """Fetch activation_level, salience, and content for scoring."""
     return await conn.fetch(
-        "SELECT id, activation_level, content FROM memory_nodes WHERE id = ANY($1)",
+        "SELECT id, activation_level, salience, content FROM memory_nodes WHERE id = ANY($1)",
         node_ids,
     )
 
@@ -208,7 +225,8 @@ async def boost_nodes(
         "UPDATE memory_nodes SET "
         "  last_accessed = NOW(), "
         "  access_count = access_count + 1, "
-        "  activation_level = LEAST(1.0, activation_level + 0.1) "
+        "  activation_level = LEAST(1.0, activation_level "
+        "    + 0.05 * (1.0 - activation_level) + 0.02) "
         "WHERE id = ANY($1) AND owner_id = $2",
         node_ids,
         owner_id,
@@ -235,14 +253,43 @@ async def decay_activations(
     conn: asyncpg.Connection,
     owner_id: UUID,
 ) -> int:
-    """Decay activation of stale nodes. Returns count."""
+    """Decay activation of stale nodes.
+
+    Decay rate depends on source type and edge density:
+    - Corrections barely decay (0.99)
+    - Observations use edge-density: hubs (5+ edges) decay at 0.98,
+      connected (2+) at 0.95, isolated at 0.92
+    - Events decay at 0.94, conversations at 0.90, system at 0.88
+    """
     result = await conn.execute(
-        "UPDATE memory_nodes SET "
-        "  activation_level = GREATEST(0.01, activation_level * 0.95) "
-        "WHERE owner_id = $1 "
-        "  AND last_accessed < NOW() - INTERVAL '24 hours' "
-        "  AND is_deleted = FALSE "
-        "  AND NOT (metadata->>'pinned' = 'true')",
+        """UPDATE memory_nodes mn SET
+          activation_level = GREATEST(0.01, mn.activation_level * (
+            CASE
+              WHEN mn.source_type = 'correction' THEN 0.99
+              WHEN mn.source_type = 'observation' THEN
+                CASE
+                  WHEN sub.edge_ct >= 5 THEN 0.98
+                  WHEN sub.edge_ct >= 2 THEN 0.95
+                  ELSE 0.92
+                END
+              WHEN mn.source_type = 'event' THEN 0.94
+              WHEN mn.source_type = 'conversation' THEN 0.90
+              WHEN mn.source_type = 'system' THEN 0.88
+              ELSE 0.95
+            END
+          ))
+        FROM (
+          SELECT mn2.id, COUNT(en.id) AS edge_ct
+          FROM memory_nodes mn2
+          LEFT JOIN edge_nodes en ON (en.source_id = mn2.id OR en.target_id = mn2.id)
+            AND en.is_deleted = FALSE
+          WHERE mn2.owner_id = $1
+            AND mn2.last_accessed < NOW() - INTERVAL '24 hours'
+            AND mn2.is_deleted = FALSE
+            AND NOT (mn2.metadata->>'pinned' = 'true')
+          GROUP BY mn2.id
+        ) sub
+        WHERE mn.id = sub.id""",
         owner_id,
     )
     return _parse_count(result)
@@ -251,7 +298,7 @@ async def decay_activations(
 async def find_near_duplicates(
     conn: asyncpg.Connection,
     owner_id: UUID,
-    similarity_threshold: float = 0.95,
+    similarity_threshold: float = 0.88,
     sample_size: int = 200,
     max_pairs: int = 50,
 ) -> list[asyncpg.Record]:

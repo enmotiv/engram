@@ -49,6 +49,7 @@ async def create_memory(
             session_id=body.session_id,
             metadata=body.metadata,
             upsert=upsert,
+            initial_activation=body.initial_activation,
         )
     except ValueError:
         raise EngramError(
