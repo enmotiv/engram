@@ -8,6 +8,7 @@ from uuid import UUID
 import asyncpg
 import structlog
 
+from engram.config import settings
 from engram.core.db import tenant_connection
 from engram.core.tracing import DREAMER_CYCLE, Span
 from engram.models import AXES
@@ -303,11 +304,25 @@ async def process_new_memories(
 
         # Store edges + mark processed (fast DB)
         async with tenant_connection(db_pool, owner_id) as conn:
+            total_edges_for_memory = 0
             for cand_id, classification in classifications.items():
                 edges = await _store_edges(
                     conn, owner_id, mem_id, cand_id, classification
                 )
                 stats["edges_created"] += edges
+                total_edges_for_memory += edges
+
+            # Phase 4: Reduce plasticity after edge creation
+            if settings.engram_flag_metaplasticity and total_edges_for_memory > 0:
+                plasticity_decrement = 0.01 * total_edges_for_memory
+                await conn.execute(
+                    "UPDATE memory_nodes SET "
+                    "  plasticity = GREATEST(0.1, plasticity - $2), "
+                    "  modification_count = modification_count + 1 "
+                    "WHERE id = $1",
+                    mem_id,
+                    plasticity_decrement,
+                )
 
             await memory_repo.mark_processed(conn, mem_id)
         stats["memories_processed"] += 1

@@ -13,9 +13,11 @@ logger = logging.getLogger(__name__)
 
 
 async def startup(ctx: dict) -> None:
-    """Called once when the worker starts. Initialize DB pool."""
+    """Called once when the worker starts. Run migrations + initialize DB pool."""
     from engram.core.db import get_pool
+    from engram.migrations.runner import run_migrations
 
+    await run_migrations()
     ctx["db_pool"] = await get_pool(settings.database_url)
     logger.info("dreamer.worker_started")
 

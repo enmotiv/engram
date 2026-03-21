@@ -7,6 +7,8 @@ from uuid import UUID
 
 import asyncpg
 
+from engram.config import settings
+
 # Default activation levels by source type — corrections are most important,
 # system metadata least. Observation is the fallback for unknown types.
 _SOURCE_ACTIVATION: dict[str, float] = {
@@ -159,11 +161,65 @@ async def find_by_vector_similarity(
     )
 
 
+async def find_by_vector_similarity_filtered(
+    conn: asyncpg.Connection,
+    owner_id: UUID,
+    vector: list[float],
+    axis: str,
+    *,
+    limit: int = 5,
+    exclude_id: UUID | None = None,
+    session_id: UUID | None = None,
+    time_window_hours: int | None = None,
+    source_types: list[str] | None = None,
+) -> list[asyncpg.Record]:
+    """Find memories by vector similarity with optional context filters."""
+    col = f"vec_{axis}"
+    conditions = [f"owner_id = $2", "is_deleted = FALSE"]
+    params: list = [vector, owner_id]
+    idx = 3
+
+    if exclude_id is not None:
+        conditions.append(f"id != ${idx}")
+        params.append(exclude_id)
+        idx += 1
+
+    if session_id is not None:
+        conditions.append(f"session_id = ${idx}")
+        params.append(session_id)
+        idx += 1
+
+    if time_window_hours is not None:
+        conditions.append(f"created_at > NOW() - INTERVAL '{int(time_window_hours)} hours'")
+
+    if source_types:
+        conditions.append(f"source_type = ANY(${idx})")
+        params.append(source_types)
+        idx += 1
+
+    params.append(limit)
+    where = " AND ".join(conditions)
+
+    return await conn.fetch(
+        f"SELECT id, content, GREATEST(0.0, 1 - ({col} <=> $1)) AS score "  # noqa: S608
+        f"FROM memory_nodes "
+        f"WHERE {where} "
+        f"ORDER BY {col} <=> $1 LIMIT ${idx}",
+        *params,
+    )
+
+
 async def fetch_activation_and_content(
     conn: asyncpg.Connection,
     node_ids: list[UUID],
 ) -> list[asyncpg.Record]:
-    """Fetch activation_level, salience, and content for scoring."""
+    """Fetch activation_level, salience, content (and plasticity when flag is on)."""
+    if settings.engram_flag_metaplasticity:
+        return await conn.fetch(
+            "SELECT id, activation_level, salience, content, plasticity "
+            "FROM memory_nodes WHERE id = ANY($1)",
+            node_ids,
+        )
     return await conn.fetch(
         "SELECT id, activation_level, salience, content FROM memory_nodes WHERE id = ANY($1)",
         node_ids,
@@ -221,14 +277,50 @@ async def boost_nodes(
     owner_id: UUID,
 ) -> int:
     """Boost activation for retrieved nodes. Returns count updated."""
+    if settings.engram_flag_metaplasticity:
+        # Scale boost by plasticity, then reduce plasticity
+        result = await conn.execute(
+            "UPDATE memory_nodes SET "
+            "  last_accessed = NOW(), "
+            "  access_count = access_count + 1, "
+            "  activation_level = LEAST(1.0, activation_level "
+            "    + (0.05 * (1.0 - activation_level) + 0.02) * plasticity), "
+            "  plasticity = GREATEST(0.1, plasticity - 0.02), "
+            "  modification_count = modification_count + 1 "
+            "WHERE id = ANY($1) AND owner_id = $2",
+            node_ids,
+            owner_id,
+        )
+    else:
+        result = await conn.execute(
+            "UPDATE memory_nodes SET "
+            "  last_accessed = NOW(), "
+            "  access_count = access_count + 1, "
+            "  activation_level = LEAST(1.0, activation_level "
+            "    + 0.05 * (1.0 - activation_level) + 0.02) "
+            "WHERE id = ANY($1) AND owner_id = $2",
+            node_ids,
+            owner_id,
+        )
+    return _parse_count(result)
+
+
+async def penalize_competitors_scaled(
+    conn: asyncpg.Connection,
+    competitor_ids: list[UUID],
+    penalties: list[float],
+    owner_id: UUID,
+) -> int:
+    """Batch-penalize competitors with per-memory penalties. One round-trip."""
+    if not competitor_ids:
+        return 0
     result = await conn.execute(
-        "UPDATE memory_nodes SET "
-        "  last_accessed = NOW(), "
-        "  access_count = access_count + 1, "
-        "  activation_level = LEAST(1.0, activation_level "
-        "    + 0.05 * (1.0 - activation_level) + 0.02) "
-        "WHERE id = ANY($1) AND owner_id = $2",
-        node_ids,
+        """UPDATE memory_nodes mn SET
+          activation_level = GREATEST(0.01, mn.activation_level - v.penalty)
+        FROM unnest($1::uuid[], $2::float[]) AS v(id, penalty)
+        WHERE mn.id = v.id AND mn.owner_id = $3 AND mn.is_deleted = FALSE""",
+        competitor_ids,
+        penalties,
         owner_id,
     )
     return _parse_count(result)
@@ -260,38 +352,85 @@ async def decay_activations(
     - Observations use edge-density: hubs (5+ edges) decay at 0.98,
       connected (2+) at 0.95, isolated at 0.92
     - Events decay at 0.94, conversations at 0.90, system at 0.88
+
+    When metaplasticity is enabled, low-plasticity (established) nodes
+    decay slower, and plasticity is restored for dormant nodes scaled
+    by modification_count.
     """
-    result = await conn.execute(
-        """UPDATE memory_nodes mn SET
-          activation_level = GREATEST(0.01, mn.activation_level * (
-            CASE
-              WHEN mn.source_type = 'correction' THEN 0.99
-              WHEN mn.source_type = 'observation' THEN
+    if settings.engram_flag_metaplasticity:
+        # Factor plasticity into decay: established nodes decay slower
+        # Also restore plasticity for dormant nodes (not accessed in 7+ days)
+        result = await conn.execute(
+            """UPDATE memory_nodes mn SET
+              activation_level = GREATEST(0.01, mn.activation_level * (
                 CASE
-                  WHEN sub.edge_ct >= 5 THEN 0.98
-                  WHEN sub.edge_ct >= 2 THEN 0.95
-                  ELSE 0.92
+                  WHEN mn.source_type = 'correction' THEN 0.99
+                  WHEN mn.source_type = 'observation' THEN
+                    CASE
+                      WHEN sub.edge_ct >= 5 THEN 0.98
+                      WHEN sub.edge_ct >= 2 THEN 0.95
+                      ELSE 0.92
+                    END
+                  WHEN mn.source_type = 'event' THEN 0.94
+                  WHEN mn.source_type = 'conversation' THEN 0.90
+                  WHEN mn.source_type = 'system' THEN 0.88
+                  ELSE 0.95
                 END
-              WHEN mn.source_type = 'event' THEN 0.94
-              WHEN mn.source_type = 'conversation' THEN 0.90
-              WHEN mn.source_type = 'system' THEN 0.88
-              ELSE 0.95
-            END
-          ))
-        FROM (
-          SELECT mn2.id, COUNT(en.id) AS edge_ct
-          FROM memory_nodes mn2
-          LEFT JOIN edge_nodes en ON (en.source_id = mn2.id OR en.target_id = mn2.id)
-            AND en.is_deleted = FALSE
-          WHERE mn2.owner_id = $1
-            AND mn2.last_accessed < NOW() - INTERVAL '24 hours'
-            AND mn2.is_deleted = FALSE
-            AND NOT (mn2.metadata->>'pinned' = 'true')
-          GROUP BY mn2.id
-        ) sub
-        WHERE mn.id = sub.id""",
-        owner_id,
-    )
+                + (1.0 - mn.plasticity) * 0.02
+              )),
+              plasticity = LEAST(1.0, mn.plasticity + CASE
+                WHEN mn.last_accessed < NOW() - INTERVAL '7 days' THEN
+                  CASE
+                    WHEN mn.modification_count >= 10 THEN 0.003
+                    WHEN mn.modification_count >= 5 THEN 0.006
+                    ELSE 0.015
+                  END
+                ELSE 0.0
+              END)
+            FROM (
+              SELECT mn2.id, COUNT(en.id) AS edge_ct
+              FROM memory_nodes mn2
+              LEFT JOIN edges en ON (en.source_id = mn2.id OR en.target_id = mn2.id)
+              WHERE mn2.owner_id = $1
+                AND mn2.last_accessed < NOW() - INTERVAL '24 hours'
+                AND mn2.is_deleted = FALSE
+                AND NOT (mn2.metadata->>'pinned' = 'true')
+              GROUP BY mn2.id
+            ) sub
+            WHERE mn.id = sub.id""",
+            owner_id,
+        )
+    else:
+        result = await conn.execute(
+            """UPDATE memory_nodes mn SET
+              activation_level = GREATEST(0.01, mn.activation_level * (
+                CASE
+                  WHEN mn.source_type = 'correction' THEN 0.99
+                  WHEN mn.source_type = 'observation' THEN
+                    CASE
+                      WHEN sub.edge_ct >= 5 THEN 0.98
+                      WHEN sub.edge_ct >= 2 THEN 0.95
+                      ELSE 0.92
+                    END
+                  WHEN mn.source_type = 'event' THEN 0.94
+                  WHEN mn.source_type = 'conversation' THEN 0.90
+                  WHEN mn.source_type = 'system' THEN 0.88
+                  ELSE 0.95
+                END
+              ))
+            FROM (
+              SELECT mn2.id, COUNT(en.id) AS edge_ct
+              FROM memory_nodes mn2
+              LEFT JOIN edges en ON (en.source_id = mn2.id OR en.target_id = mn2.id)
+              WHERE mn2.owner_id = $1
+                AND mn2.last_accessed < NOW() - INTERVAL '24 hours'
+                AND mn2.is_deleted = FALSE
+                AND NOT (mn2.metadata->>'pinned' = 'true')
+              GROUP BY mn2.id
+            ) sub
+            WHERE mn.id = sub.id""",
+            owner_id,
+        )
     return _parse_count(result)
 
 

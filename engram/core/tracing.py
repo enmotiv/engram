@@ -139,6 +139,7 @@ class TraceCollector:
             "nodes_excluded": 0,
             "exclude_tags": [],
         }
+        self.attractor: dict | None = None
 
     def finish(self) -> dict:
         """Build the trace response object."""
@@ -153,6 +154,7 @@ class TraceCollector:
             "unique_candidates": self.unique_candidates,
             "convergence_scores": self.convergence_scores,
             "spreading_activation": self.spreading,
+            "attractor": self.attractor,
             "reconsolidation": self.reconsolidation,
             "post_filter": self.post_filter,
         }

@@ -16,6 +16,53 @@ MIGRATIONS_DIR = Path(__file__).parent.parent / "migrations"
 TEST_DB_URL = os.environ.get("TEST_DATABASE_URL")
 
 
+# --- Feature flag helpers ---
+
+
+@pytest.fixture
+def enable_flag(monkeypatch):
+    """Helper to enable a feature flag for a single test.
+
+    Patches the settings object referenced by all service modules,
+    even if engram.config was reloaded by a prior test.
+    """
+    def _enable(flag_name: str):
+        import engram.config
+        monkeypatch.setattr(engram.config.settings, flag_name, True)
+        # Also patch settings in service modules that may have imported
+        # the old settings object before a reload
+        for mod_path in [
+            "engram.services.read",
+            "engram.services.reconsolidation",
+            "engram.services.dreamer",
+            "engram.repositories.memory_repo",
+        ]:
+            import sys
+            mod = sys.modules.get(mod_path)
+            if mod and hasattr(mod, "settings"):
+                monkeypatch.setattr(mod.settings, flag_name, True)
+    return _enable
+
+
+@pytest.fixture
+def disable_flag(monkeypatch):
+    """Helper to explicitly disable a feature flag for a single test."""
+    def _disable(flag_name: str):
+        import engram.config
+        monkeypatch.setattr(engram.config.settings, flag_name, False)
+        for mod_path in [
+            "engram.services.read",
+            "engram.services.reconsolidation",
+            "engram.services.dreamer",
+            "engram.repositories.memory_repo",
+        ]:
+            import sys
+            mod = sys.modules.get(mod_path)
+            if mod and hasattr(mod, "settings"):
+                monkeypatch.setattr(mod.settings, flag_name, False)
+    return _disable
+
+
 # --- Helpers ---
 
 

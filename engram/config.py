@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     engram_retrieval_exclude_tags: str = ""
     engram_admin_secret: str = ""
 
+    # Feature flags — all off by default. Enable per-mechanism via env vars.
+    engram_flag_context_retrieval: bool = False    # Phase 1: context-scaffolded retrieval
+    engram_flag_forgetting: bool = False           # Phase 2: retrieval-induced forgetting
+    engram_flag_attractor: bool = False            # Phase 3: attractor dynamics
+    engram_flag_metaplasticity: bool = False       # Phase 4: metaplasticity
+
     @property
     def exclude_tags_set(self) -> set[str]:
         if not self.engram_retrieval_exclude_tags:

@@ -1,4 +1,4 @@
-"""Run SQL migrations on startup. Idempotent — safe to run repeatedly."""
+"""Run SQL migrations on startup. Idempotent — safe to run concurrently."""
 
 import asyncio
 import glob
@@ -6,6 +6,7 @@ import os
 
 import asyncpg
 import structlog
+from asyncpg import UniqueViolationError
 
 from engram.config import settings
 
@@ -47,13 +48,17 @@ async def run_migrations() -> None:
             with open(path) as f:
                 sql = f.read()
 
-            async with conn.transaction():
-                await conn.execute(sql)
-                await conn.execute(
-                    "INSERT INTO _applied_migrations (filename) VALUES ($1)",
-                    filename,
-                )
-            logger.info("migration.applied", filename=filename)
+            try:
+                async with conn.transaction():
+                    await conn.execute(sql)
+                    await conn.execute(
+                        "INSERT INTO _applied_migrations (filename) VALUES ($1)",
+                        filename,
+                    )
+                logger.info("migration.applied", filename=filename)
+            except UniqueViolationError:
+                # Another process applied it concurrently — safe to skip
+                logger.info("migration.skipped_concurrent", filename=filename)
     finally:
         await conn.close()
 

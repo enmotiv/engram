@@ -1,8 +1,12 @@
 """Recall request/response models."""
 
+from __future__ import annotations
+
+from uuid import UUID
+
 from pydantic import BaseModel, Field
 
-from engram.models.common import ConfidenceLevel
+from engram.models.common import ConfidenceLevel, SourceType
 from engram.models.edge import EdgeResponse
 from engram.models.memory import MemoryResponse
 
@@ -16,6 +20,24 @@ class RecallRequest(BaseModel):
         default=None,
         description="Filter to only return nodes with this metadata.type value. "
         "Overrides ENGRAM_RETRIEVAL_EXCLUDE_TAGS when set.",
+    )
+    # Phase 1: Context-scaffolded retrieval
+    session_id: UUID | None = Field(
+        default=None, description="Filter to memories from this session"
+    )
+    axis_weights: dict[str, float] | None = Field(
+        default=None,
+        description="Per-axis importance multipliers, e.g. {'emotional': 2.0, 'semantic': 0.5}",
+    )
+    time_window_hours: int | None = Field(
+        default=None, ge=1, description="Only memories from last N hours"
+    )
+    source_types: list[SourceType] | None = Field(
+        default=None, description="Filter by source types"
+    )
+    # Phase 3: Attractor dynamics
+    settle: bool = Field(
+        default=False, description="Enable iterative attractor settling for deeper recall"
     )
 
 

@@ -36,6 +36,11 @@ async def recall(
             min_convergence=body.min_convergence,
             include_edges=body.include_edges,
             metadata_type=body.metadata_type,
+            session_id=body.session_id,
+            axis_weights=body.axis_weights,
+            time_window_hours=body.time_window_hours,
+            source_types=body.source_types,
+            settle=body.settle,
         )
     finally:
         set_trace(None)

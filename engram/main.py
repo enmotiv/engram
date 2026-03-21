@@ -31,6 +31,9 @@ logger = structlog.get_logger()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    from engram.migrations.runner import run_migrations
+
+    await run_migrations()
     app.state.db = await get_pool(settings.database_url)
     await validate_vector_dimensions(app.state.db, settings.engram_embedding_dimensions)
     await load_extensions(app, app.state.db)

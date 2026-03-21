@@ -82,6 +82,89 @@ async def stats(
     }
 
 
+@router.get("/stats/detailed")
+async def stats_detailed(
+    request: Request,
+    owner_id: UUID = Depends(get_owner_id),  # noqa: B008
+) -> dict:
+    """Detailed per-owner diagnostics: recall activity, dreamer state, plasticity distribution."""
+    db = request.app.state.db
+    async with tenant_connection(db, owner_id) as conn:
+        row = await conn.fetchrow(
+            """SELECT
+              COUNT(*) FILTER (WHERE is_deleted = FALSE) AS total_nodes,
+              COUNT(*) FILTER (WHERE access_count > 0 AND is_deleted = FALSE) AS recalled_nodes,
+              MAX(access_count) AS max_access_count,
+              ROUND(AVG(access_count) FILTER (WHERE access_count > 0), 1) AS avg_access_count,
+              COUNT(*) FILTER (WHERE dreamer_processed = TRUE AND is_deleted = FALSE) AS dreamer_processed,
+              COUNT(*) FILTER (WHERE dreamer_processed = FALSE AND is_deleted = FALSE) AS dreamer_pending
+            FROM memory_nodes WHERE owner_id = $1""",
+            owner_id,
+        )
+        edge_row = await conn.fetchrow(
+            "SELECT COUNT(*) AS edge_count FROM edges WHERE owner_id = $1",
+            owner_id,
+        )
+
+        # Plasticity distribution (only if column exists)
+        plast_row = None
+        try:
+            plast_row = await conn.fetchrow(
+                """SELECT
+                  COUNT(*) FILTER (WHERE plasticity <= 0.2) AS hardened,
+                  COUNT(*) FILTER (WHERE plasticity > 0.2 AND plasticity <= 0.5) AS moderate,
+                  COUNT(*) FILTER (WHERE plasticity > 0.5 AND plasticity <= 0.8) AS flexible,
+                  COUNT(*) FILTER (WHERE plasticity > 0.8) AS fresh,
+                  ROUND(AVG(plasticity)::numeric, 3) AS avg_plasticity,
+                  ROUND(AVG(modification_count)::numeric, 1) AS avg_modification_count
+                FROM memory_nodes WHERE owner_id = $1 AND is_deleted = FALSE""",
+                owner_id,
+            )
+        except Exception:
+            pass  # Column doesn't exist yet (pre-migration)
+
+        # Trust level breakdown
+        trust_row = await conn.fetch(
+            """SELECT
+              metadata->>'trust_level' AS trust,
+              COUNT(*) AS ct
+            FROM memory_nodes
+            WHERE owner_id = $1 AND is_deleted = FALSE
+            GROUP BY metadata->>'trust_level'
+            ORDER BY ct DESC""",
+            owner_id,
+        )
+
+    result = {
+        "recall_activity": {
+            "total_nodes": row["total_nodes"],
+            "nodes_ever_recalled": row["recalled_nodes"],
+            "max_access_count": row["max_access_count"],
+            "avg_access_count": float(row["avg_access_count"] or 0),
+        },
+        "dreamer": {
+            "processed": row["dreamer_processed"],
+            "pending": row["dreamer_pending"],
+            "edge_count": edge_row["edge_count"],
+        },
+        "trust_levels": {
+            (r["trust"] or "none"): r["ct"] for r in trust_row
+        },
+    }
+
+    if plast_row:
+        result["plasticity"] = {
+            "hardened_le_0.2": plast_row["hardened"],
+            "moderate_0.2_0.5": plast_row["moderate"],
+            "flexible_0.5_0.8": plast_row["flexible"],
+            "fresh_gt_0.8": plast_row["fresh"],
+            "avg_plasticity": float(plast_row["avg_plasticity"] or 0),
+            "avg_modification_count": float(plast_row["avg_modification_count"] or 0),
+        }
+
+    return {"data": result}
+
+
 @router.post("/admin/dreamer/run")
 async def trigger_dreamer(
     request: Request,
