@@ -83,7 +83,7 @@ CREATE TABLE memory_nodes (
   modification_count   INTEGER NOT NULL DEFAULT 0,
   enmotiv_id           VARCHAR(255),
   PRIMARY KEY (owner_id, id),
-  UNIQUE (owner_id, content_hash),
+  UNIQUE (owner_id, content_hash)
   -- enmotiv_id uniqueness enforced via partial unique index below (NULLs allowed)
 ) PARTITION BY HASH (owner_id);
 
