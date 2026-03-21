@@ -55,26 +55,29 @@ async def insert_memory(
         meta_json,
     ]
     try:
-        await conn.execute(
-            """INSERT INTO memory_nodes (
-                id, owner_id, content, content_hash, source_type,
-                session_id, embedding_model, embedding_dimensions,
-                salience, activation_level, access_count,
-                vec_temporal, vec_emotional, vec_semantic,
-                vec_sensory, vec_action, vec_procedural,
-                metadata, dreamer_processed, enmotiv_id
-            ) VALUES (
-                $1, $2, $3, $4, $5,
-                $6, $7, $8,
-                $9, $10, 0,
-                $11, $12, $13,
-                $14, $15, $16,
-                $17, FALSE, $18
-            )""",
-            *base_args, enmotiv_id,
-        )
+        # Savepoint so UndefinedColumnError doesn't poison the transaction
+        async with conn.transaction():
+            await conn.execute(
+                """INSERT INTO memory_nodes (
+                    id, owner_id, content, content_hash, source_type,
+                    session_id, embedding_model, embedding_dimensions,
+                    salience, activation_level, access_count,
+                    vec_temporal, vec_emotional, vec_semantic,
+                    vec_sensory, vec_action, vec_procedural,
+                    metadata, dreamer_processed, enmotiv_id
+                ) VALUES (
+                    $1, $2, $3, $4, $5,
+                    $6, $7, $8,
+                    $9, $10, 0,
+                    $11, $12, $13,
+                    $14, $15, $16,
+                    $17, FALSE, $18
+                )""",
+                *base_args, enmotiv_id,
+            )
     except asyncpg.exceptions.UndefinedColumnError:
-        # Pre-migration 006: enmotiv_id column doesn't exist yet
+        # Pre-migration 006: enmotiv_id column doesn't exist yet.
+        # Savepoint rolled back, transaction is clean for retry.
         await conn.execute(
             """INSERT INTO memory_nodes (
                 id, owner_id, content, content_hash, source_type,
@@ -105,15 +108,16 @@ async def find_by_metadata_value(
     # Fast path: enmotiv_id column (post-migration 006), fall back to JSONB
     if meta_key == "enmotiv_id":
         try:
-            return await conn.fetchval(
-                "SELECT id FROM memory_nodes "
-                "WHERE owner_id = $1 AND enmotiv_id = $2 AND is_deleted = FALSE "
-                "LIMIT 1",
-                owner_id,
-                meta_value,
-            )
+            async with conn.transaction():
+                return await conn.fetchval(
+                    "SELECT id FROM memory_nodes "
+                    "WHERE owner_id = $1 AND enmotiv_id = $2 AND is_deleted = FALSE "
+                    "LIMIT 1",
+                    owner_id,
+                    meta_value,
+                )
         except asyncpg.exceptions.UndefinedColumnError:
-            pass  # Fall through to JSONB path
+            pass  # Savepoint rolled back, fall through to JSONB path
     return await conn.fetchval(
         "SELECT id FROM memory_nodes "
         "WHERE owner_id = $1 AND metadata->>$2 = $3 AND is_deleted = FALSE "
