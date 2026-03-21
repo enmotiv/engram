@@ -1,4 +1,4 @@
--- 006: Hash-partition memory_nodes + edges by owner_id (256 partitions)
+-- 006: Hash-partition memory_nodes + edges by owner_id (32 partitions)
 -- Adds enmotiv_id as a real column for fast lookups without JSONB extraction.
 --
 -- With one user and a few hundred memories, the data copy is milliseconds.
@@ -50,7 +50,7 @@ DROP INDEX IF EXISTS idx_edges_target_axis;
 DROP INDEX IF EXISTS idx_edges_live;
 
 -- -------------------------------------------------------------------------
--- Step 4: Create hash-partitioned memory_nodes (256 partitions)
+-- Step 4: Create hash-partitioned memory_nodes (32 partitions)
 -- -------------------------------------------------------------------------
 
 CREATE TABLE memory_nodes (
@@ -87,20 +87,20 @@ CREATE TABLE memory_nodes (
   -- enmotiv_id uniqueness enforced via partial unique index below (NULLs allowed)
 ) PARTITION BY HASH (owner_id);
 
--- Generate 256 partitions
+-- Generate 32 partitions
 DO $$
 BEGIN
-  FOR i IN 0..255 LOOP
+  FOR i IN 0..31 LOOP
     EXECUTE format(
       'CREATE TABLE memory_nodes_p%s PARTITION OF memory_nodes '
-      'FOR VALUES WITH (MODULUS 256, REMAINDER %s)',
+      'FOR VALUES WITH (MODULUS 32, REMAINDER %s)',
       i, i
     );
   END LOOP;
 END $$;
 
 -- -------------------------------------------------------------------------
--- Step 5: Create hash-partitioned edges (256 partitions)
+-- Step 5: Create hash-partitioned edges (32 partitions)
 -- -------------------------------------------------------------------------
 
 CREATE TABLE edges (
@@ -126,10 +126,10 @@ CREATE TABLE edges (
 
 DO $$
 BEGIN
-  FOR i IN 0..255 LOOP
+  FOR i IN 0..31 LOOP
     EXECUTE format(
       'CREATE TABLE edges_p%s PARTITION OF edges '
-      'FOR VALUES WITH (MODULUS 256, REMAINDER %s)',
+      'FOR VALUES WITH (MODULUS 32, REMAINDER %s)',
       i, i
     );
   END LOOP;
