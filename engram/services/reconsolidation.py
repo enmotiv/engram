@@ -147,7 +147,7 @@ async def reconsolidate(
                         and not winner_has_correction
                     ):
                         plast_rows = await memory_repo.fetch_activation_and_content(
-                            conn, comp_ids
+                            conn, comp_ids, owner_id=owner_id
                         )
                         plast_map = {
                             r["id"]: r["plasticity"] for r in plast_rows

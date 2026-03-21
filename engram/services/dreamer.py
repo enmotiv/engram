@@ -253,7 +253,7 @@ async def process_new_memories(
             )
         if existing_edge_count >= MAX_EDGES_PER_NODE:
             async with tenant_connection(db_pool, owner_id) as conn:
-                await memory_repo.mark_processed(conn, mem_id)
+                await memory_repo.mark_processed(conn, mem_id, owner_id=owner_id)
             stats["memories_processed"] += 1
             continue
 
@@ -261,12 +261,12 @@ async def process_new_memories(
         async with tenant_connection(db_pool, owner_id) as conn:
             candidates = await _find_candidates(conn, mem_id, owner_id, vectors)
             if not candidates:
-                await memory_repo.mark_processed(conn, mem_id)
+                await memory_repo.mark_processed(conn, mem_id, owner_id=owner_id)
                 stats["memories_processed"] += 1
                 continue
 
             cand_ids = [c["id"] for c in candidates]
-            content_rows = await memory_repo.fetch_content_by_ids(conn, cand_ids)
+            content_rows = await memory_repo.fetch_content_by_ids(conn, cand_ids, owner_id=owner_id)
 
         # Classify all pairs in parallel (slow LLM calls, no DB connection held)
         cand_contents = {row["id"]: row["content"] for row in content_rows}
@@ -324,7 +324,7 @@ async def process_new_memories(
                     plasticity_decrement,
                 )
 
-            await memory_repo.mark_processed(conn, mem_id)
+            await memory_repo.mark_processed(conn, mem_id, owner_id=owner_id)
         stats["memories_processed"] += 1
 
     logger.info(

@@ -36,8 +36,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await run_migrations()
     app.state.db = await get_pool(settings.database_url)
     await validate_vector_dimensions(app.state.db, settings.engram_embedding_dimensions)
+
+    # Redis for auth cache (optional — degrades gracefully if unavailable)
+    app.state.redis = None
+    if settings.redis_url:
+        try:
+            import redis.asyncio as aioredis
+
+            app.state.redis = aioredis.from_url(
+                settings.redis_url, decode_responses=True,
+            )
+            await app.state.redis.ping()
+            logger.info("redis.connected", url=settings.redis_url.split("@")[-1])
+        except Exception as exc:
+            logger.warning("redis.unavailable", error=str(exc))
+            app.state.redis = None
+
     await load_extensions(app, app.state.db)
     yield
+    if app.state.redis:
+        await app.state.redis.aclose()
     await close_pool(app.state.db)
 
 

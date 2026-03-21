@@ -28,6 +28,41 @@ def _verify_admin(secret: str) -> None:
         raise EngramError("UNAUTHORIZED", "Invalid admin secret", 401)
 
 
+# --- Provision (owner + key in one call) ---
+
+
+class ProvisionRequest(BaseModel):
+    owner_id: UUID
+    label: str = ""
+
+
+@router.post("/provision", status_code=201)
+async def provision_owner(
+    body: ProvisionRequest,
+    request: Request,
+    x_admin_secret: str = Header(...),
+) -> dict:
+    """Create owner + API key in one call. Idempotent for owner (ON CONFLICT)."""
+    _verify_admin(x_admin_secret)
+
+    from engram.repositories.owner_repo import create_api_key, create_owner
+
+    db = request.app.state.db
+    async with db.acquire() as conn:
+        await create_owner(conn, owner_id=body.owner_id, label=body.label)
+        raw_key, key_id = await create_api_key(
+            conn, owner_id=body.owner_id, label=body.label,
+        )
+
+    return {
+        "data": {
+            "owner_id": str(body.owner_id),
+            "api_key": raw_key,
+            "key_id": str(key_id),
+        }
+    }
+
+
 # --- API Key Management ---
 
 

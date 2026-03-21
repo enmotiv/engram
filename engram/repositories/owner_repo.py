@@ -65,6 +65,21 @@ async def list_api_keys(
     )
 
 
+async def create_owner(
+    conn: asyncpg.Connection,
+    owner_id: UUID,
+    label: str,
+) -> UUID:
+    """Create an owner. Idempotent — ON CONFLICT DO NOTHING."""
+    await conn.execute(
+        "INSERT INTO owners (id, label) VALUES ($1, $2) "
+        "ON CONFLICT (id) DO NOTHING",
+        owner_id,
+        label,
+    )
+    return owner_id
+
+
 async def get_all_owner_ids(
     conn: asyncpg.Connection,
 ) -> list[UUID]:

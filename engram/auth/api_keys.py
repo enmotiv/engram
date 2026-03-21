@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from collections import defaultdict
 from uuid import UUID
@@ -15,6 +16,11 @@ from engram.core.errors import EngramError
 from engram.core.tracing import set_correlation_id, set_owner_id
 
 logger = structlog.get_logger()
+
+# Redis cache TTLs
+_AUTH_CACHE_TTL = 300  # 5 minutes for valid keys
+_AUTH_NEGATIVE_TTL = 30  # 30 seconds for invalid keys
+_AUTH_CACHE_PREFIX = "engram:auth:"
 
 
 def hash_api_key(raw_key: str) -> str:
@@ -52,13 +58,61 @@ class RateLimiter:
 _rate_limiter = RateLimiter()
 
 
+# --- Redis auth cache helpers ---
+
+
+async def _cache_get(redis, key_hash: str) -> dict | None:
+    """Try Redis cache for auth data. Returns None on miss or error."""
+    if redis is None:
+        return None
+    try:
+        raw = await redis.get(f"{_AUTH_CACHE_PREFIX}{key_hash}")
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        pass
+    return None
+
+
+async def _cache_set(redis, key_hash: str, data: dict | None) -> None:
+    """Cache auth result in Redis. data=None means negative cache."""
+    if redis is None:
+        return
+    try:
+        if data is None:
+            await redis.set(
+                f"{_AUTH_CACHE_PREFIX}{key_hash}",
+                json.dumps({"invalid": True}),
+                ex=_AUTH_NEGATIVE_TTL,
+            )
+        else:
+            await redis.set(
+                f"{_AUTH_CACHE_PREFIX}{key_hash}",
+                json.dumps(data),
+                ex=_AUTH_CACHE_TTL,
+            )
+    except Exception:
+        pass  # Cache is optional — DB is always authoritative
+
+
+async def invalidate_auth_cache(redis, key_hash: str) -> None:
+    """Remove a key from the auth cache (e.g., on revocation)."""
+    if redis is None:
+        return
+    try:
+        await redis.delete(f"{_AUTH_CACHE_PREFIX}{key_hash}")
+    except Exception:
+        pass
+
+
 # --- FastAPI Dependency ---
 
 
 async def get_owner_id(request: Request) -> UUID:
     """Validate API key, enforce rate limit, return owner_id.
 
-    Stores rate_info on request.state for the response-header middleware.
+    Checks Redis cache before hitting the DB. Stores rate_info on
+    request.state for the response-header middleware.
     """
     auth_header = request.headers.get("authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
@@ -72,19 +126,41 @@ async def get_owner_id(request: Request) -> UUID:
 
     key_hash = hash_api_key(raw_key)
 
-    db: asyncpg.Pool = request.app.state.db
-    async with db.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT owner_id, rate_limit_writes, rate_limit_reads "
-            "FROM api_keys "
-            "WHERE key_hash = $1 AND revoked_at IS NULL",
-            key_hash,
-        )
+    # Try Redis cache first
+    redis = getattr(request.app.state, "redis", None)
+    cached = await _cache_get(redis, key_hash)
 
-    if not row:
-        raise EngramError("UNAUTHORIZED", "Invalid API key", 401)
+    if cached is not None:
+        if cached.get("invalid"):
+            raise EngramError("UNAUTHORIZED", "Invalid API key", 401)
+        owner_id = UUID(cached["owner_id"])
+        rate_limit_writes = cached["rate_limit_writes"]
+        rate_limit_reads = cached["rate_limit_reads"]
+    else:
+        # Fall through to DB
+        db: asyncpg.Pool = request.app.state.db
+        async with db.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT owner_id, rate_limit_writes, rate_limit_reads "
+                "FROM api_keys "
+                "WHERE key_hash = $1 AND revoked_at IS NULL",
+                key_hash,
+            )
 
-    owner_id: UUID = row["owner_id"]
+        if not row:
+            await _cache_set(redis, key_hash, None)  # Negative cache
+            raise EngramError("UNAUTHORIZED", "Invalid API key", 401)
+
+        owner_id = row["owner_id"]
+        rate_limit_writes = row["rate_limit_writes"]
+        rate_limit_reads = row["rate_limit_reads"]
+
+        # Populate cache
+        await _cache_set(redis, key_hash, {
+            "owner_id": str(owner_id),
+            "rate_limit_writes": rate_limit_writes,
+            "rate_limit_reads": rate_limit_reads,
+        })
 
     # Set ContextVars for structured logging
     cid = getattr(request.state, "correlation_id", "")
@@ -95,10 +171,10 @@ async def get_owner_id(request: Request) -> UUID:
     # Determine bucket + limit by HTTP method
     method = request.method.upper()
     if method in ("POST", "PUT", "PATCH", "DELETE"):
-        limit = row["rate_limit_writes"]
+        limit = rate_limit_writes
         bucket = f"write:{key_hash}"
     else:
-        limit = row["rate_limit_reads"]
+        limit = rate_limit_reads
         bucket = f"read:{key_hash}"
 
     allowed, remaining, reset = _rate_limiter.check(bucket, limit)

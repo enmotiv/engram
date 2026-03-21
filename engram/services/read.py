@@ -131,6 +131,7 @@ async def _score_candidates(
     cue: str = "",
     *,
     axis_weights: dict[str, float] | None = None,
+    owner_id: UUID | None = None,
 ) -> tuple[list[dict], dict[UUID, float] | None]:
     """Score and rank candidates by convergence * activation.
 
@@ -155,7 +156,7 @@ async def _score_candidates(
     with Span(
         "read_path.convergence", component="read_path", expected_ms=1
     ):
-        rows = await memory_repo.fetch_activation_and_content(conn, node_ids)
+        rows = await memory_repo.fetch_activation_and_content(conn, node_ids, owner_id=owner_id)
         activations = {row["id"]: row["activation_level"] for row in rows}
         saliences = {row["id"]: row["salience"] for row in rows}
         contents = {row["id"]: (row["content"] or "").lower() for row in rows}
@@ -534,12 +535,13 @@ async def _spreading_activation(
 async def _fetch_nodes(
     conn: asyncpg.Connection,
     node_ids: list[UUID],
+    owner_id: UUID | None = None,
 ) -> dict[UUID, MemoryNode]:
     """Batch fetch full node data for response building."""
     if not node_ids:
         return {}
 
-    rows = await memory_repo.fetch_full_nodes(conn, node_ids)
+    rows = await memory_repo.fetch_full_nodes(conn, node_ids, owner_id=owner_id)
 
     result = {}
     for row in rows:
@@ -673,6 +675,7 @@ async def recall_memories(
             scored, plasticity_map = await _score_candidates(
                 conn, candidates, cue=cue,
                 axis_weights=axis_weights,
+                owner_id=owner_id,
             )
 
             # 2.5. Attractor settling (Phase 3)
@@ -702,7 +705,7 @@ async def recall_memories(
             all_ids = list(
                 set(candidates.keys()) | set(activation_map.keys())
             )
-            nodes_by_id = await _fetch_nodes(conn, all_ids)
+            nodes_by_id = await _fetch_nodes(conn, all_ids, owner_id=owner_id)
 
         # Phase C: rank, filter, build response (no DB needed)
         # Same per-axis threshold as scoring phase

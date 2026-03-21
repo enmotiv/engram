@@ -42,6 +42,9 @@ async def insert_memory(
         if activation_level is not None
         else _SOURCE_ACTIVATION.get(source_type, 0.7)
     )
+    # Extract enmotiv_id from metadata for the dedicated column
+    _raw_enmotiv = (metadata or {}).get("enmotiv_id")
+    enmotiv_id = str(_raw_enmotiv) if _raw_enmotiv is not None else None
     await conn.execute(
         """INSERT INTO memory_nodes (
             id, owner_id, content, content_hash, source_type,
@@ -49,14 +52,14 @@ async def insert_memory(
             salience, activation_level, access_count,
             vec_temporal, vec_emotional, vec_semantic,
             vec_sensory, vec_action, vec_procedural,
-            metadata, dreamer_processed
+            metadata, dreamer_processed, enmotiv_id
         ) VALUES (
             $1, $2, $3, $4, $5,
             $6, $7, $8,
             $9, $10, 0,
             $11, $12, $13,
             $14, $15, $16,
-            $17, FALSE
+            $17, FALSE, $18
         )""",
         node_id,
         owner_id,
@@ -75,6 +78,7 @@ async def insert_memory(
         vectors["action"],
         vectors["procedural"],
         json.dumps(metadata) if metadata else "{}",
+        enmotiv_id,
     )
 
 
@@ -85,6 +89,15 @@ async def find_by_metadata_value(
     meta_value: str,
 ) -> UUID | None:
     """Return the ID of a memory matching a metadata key/value, or None."""
+    # Fast path: enmotiv_id is a real column with a B-tree index
+    if meta_key == "enmotiv_id":
+        return await conn.fetchval(
+            "SELECT id FROM memory_nodes "
+            "WHERE owner_id = $1 AND enmotiv_id = $2 AND is_deleted = FALSE "
+            "LIMIT 1",
+            owner_id,
+            meta_value,
+        )
     return await conn.fetchval(
         "SELECT id FROM memory_nodes "
         "WHERE owner_id = $1 AND metadata->>$2 = $3 AND is_deleted = FALSE "
@@ -229,8 +242,26 @@ async def find_by_vector_similarity_filtered(
 async def fetch_activation_and_content(
     conn: asyncpg.Connection,
     node_ids: list[UUID],
+    owner_id: UUID | None = None,
 ) -> list[asyncpg.Record]:
-    """Fetch activation_level, salience, content (and plasticity when flag is on)."""
+    """Fetch activation_level, salience, content (and plasticity when flag is on).
+
+    When owner_id is provided, the query benefits from partition pruning
+    (scans 1 partition instead of 256).
+    """
+    if owner_id is not None:
+        if settings.engram_flag_metaplasticity:
+            return await conn.fetch(
+                "SELECT id, activation_level, salience, content, plasticity "
+                "FROM memory_nodes WHERE owner_id = $1 AND id = ANY($2)",
+                owner_id, node_ids,
+            )
+        return await conn.fetch(
+            "SELECT id, activation_level, salience, content "
+            "FROM memory_nodes WHERE owner_id = $1 AND id = ANY($2)",
+            owner_id, node_ids,
+        )
+    # Fallback: no partition pruning (backward compat)
     if settings.engram_flag_metaplasticity:
         return await conn.fetch(
             "SELECT id, activation_level, salience, content, plasticity "
@@ -246,10 +277,23 @@ async def fetch_activation_and_content(
 async def fetch_full_nodes(
     conn: asyncpg.Connection,
     node_ids: list[UUID],
+    owner_id: UUID | None = None,
 ) -> list[asyncpg.Record]:
-    """Batch fetch full node data for response building."""
+    """Batch fetch full node data for response building.
+
+    When owner_id is provided, the query benefits from partition pruning.
+    """
     if not node_ids:
         return []
+    if owner_id is not None:
+        return await conn.fetch(
+            "SELECT id, owner_id, content, content_hash, created_at, "
+            "last_accessed, access_count, activation_level, salience, "
+            "source_type, session_id, embedding_model, embedding_dimensions, "
+            "metadata, is_deleted, dreamer_processed "
+            "FROM memory_nodes WHERE owner_id = $1 AND id = ANY($2)",
+            owner_id, node_ids,
+        )
     return await conn.fetch(
         "SELECT id, owner_id, content, content_hash, created_at, "
         "last_accessed, access_count, activation_level, salience, "
@@ -280,12 +324,23 @@ async def fetch_unprocessed(
 async def mark_processed(
     conn: asyncpg.Connection,
     memory_id: UUID,
+    owner_id: UUID | None = None,
 ) -> None:
-    """Mark a memory as processed by the Dreamer."""
-    await conn.execute(
-        "UPDATE memory_nodes SET dreamer_processed = TRUE WHERE id = $1",
-        memory_id,
-    )
+    """Mark a memory as processed by the Dreamer.
+
+    When owner_id is provided, the UPDATE benefits from partition pruning.
+    """
+    if owner_id is not None:
+        await conn.execute(
+            "UPDATE memory_nodes SET dreamer_processed = TRUE "
+            "WHERE owner_id = $1 AND id = $2",
+            owner_id, memory_id,
+        )
+    else:
+        await conn.execute(
+            "UPDATE memory_nodes SET dreamer_processed = TRUE WHERE id = $1",
+            memory_id,
+        )
 
 
 async def boost_nodes(
@@ -407,7 +462,7 @@ async def decay_activations(
             FROM (
               SELECT mn2.id, COUNT(en.id) AS edge_ct
               FROM memory_nodes mn2
-              LEFT JOIN edges en ON (en.source_id = mn2.id OR en.target_id = mn2.id)
+              LEFT JOIN edges en ON en.owner_id = mn2.owner_id AND (en.source_id = mn2.id OR en.target_id = mn2.id)
               WHERE mn2.owner_id = $1
                 AND mn2.last_accessed < NOW() - INTERVAL '24 hours'
                 AND mn2.is_deleted = FALSE
@@ -438,7 +493,7 @@ async def decay_activations(
             FROM (
               SELECT mn2.id, COUNT(en.id) AS edge_ct
               FROM memory_nodes mn2
-              LEFT JOIN edges en ON (en.source_id = mn2.id OR en.target_id = mn2.id)
+              LEFT JOIN edges en ON en.owner_id = mn2.owner_id AND (en.source_id = mn2.id OR en.target_id = mn2.id)
               WHERE mn2.owner_id = $1
                 AND mn2.last_accessed < NOW() - INTERVAL '24 hours'
                 AND mn2.is_deleted = FALSE
@@ -580,8 +635,17 @@ async def list_memories_paginated(
 async def fetch_content_by_ids(
     conn: asyncpg.Connection,
     node_ids: list[UUID],
+    owner_id: UUID | None = None,
 ) -> list[asyncpg.Record]:
-    """Fetch id and content for a list of node IDs."""
+    """Fetch id and content for a list of node IDs.
+
+    When owner_id is provided, the query benefits from partition pruning.
+    """
+    if owner_id is not None:
+        return await conn.fetch(
+            "SELECT id, content FROM memory_nodes WHERE owner_id = $1 AND id = ANY($2)",
+            owner_id, node_ids,
+        )
     return await conn.fetch(
         "SELECT id, content FROM memory_nodes WHERE id = ANY($1)",
         node_ids,
