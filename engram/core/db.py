@@ -51,14 +51,27 @@ async def tenant_connection(
 
 
 async def validate_vector_dimensions(pool: asyncpg.Pool, expected_dims: int) -> None:
-    """Verify DDL vector dimensions match config. Uses schema metadata."""
+    """Verify DDL vector dimensions match config. Uses schema metadata.
+
+    For hash-partitioned tables, the parent's pg_attribute may return -1
+    for atttypmod. In that case, check the first child partition instead.
+    """
     async with pool.acquire() as conn:
         db_dims = await conn.fetchval(
             "SELECT atttypmod FROM pg_attribute "
             "WHERE attrelid = 'memory_nodes'::regclass "
             "AND attname = 'vec_temporal'"
         )
-    if db_dims is not None and db_dims != expected_dims:
+        # Partitioned parents return -1; check first child partition
+        if db_dims is not None and db_dims == -1:
+            db_dims = await conn.fetchval(
+                "SELECT a.atttypmod FROM pg_attribute a "
+                "JOIN pg_inherits i ON a.attrelid = i.inhrelid "
+                "WHERE i.inhparent = 'memory_nodes'::regclass "
+                "AND a.attname = 'vec_temporal' "
+                "LIMIT 1"
+            )
+    if db_dims is not None and db_dims > 0 and db_dims != expected_dims:
         msg = (
             f"Vector dimension mismatch: database has {db_dims}, "
             f"config has {expected_dims}. "
