@@ -33,9 +33,13 @@ logger = structlog.get_logger()
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from engram.migrations.runner import run_migrations
 
+    logger.info("lifespan.migrations_start")
     await run_migrations()
+    logger.info("lifespan.pool_start")
     app.state.db = await get_pool(settings.database_url)
+    logger.info("lifespan.validate_dimensions")
     await validate_vector_dimensions(app.state.db, settings.engram_embedding_dimensions)
+    logger.info("lifespan.dimensions_ok")
 
     # Redis for auth cache (optional — degrades gracefully if unavailable)
     app.state.redis = None
@@ -52,7 +56,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.warning("redis.unavailable", error=str(exc))
             app.state.redis = None
 
+    logger.info("lifespan.extensions_start")
     await load_extensions(app, app.state.db)
+    logger.info("lifespan.ready")
     yield
     if app.state.redis:
         await app.state.redis.aclose()
