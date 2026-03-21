@@ -154,6 +154,80 @@ async def list_memories(
     return {"data": {"memories": memories, "next_cursor": next_cursor}}
 
 
+# --- PATCH /v1/memories/:id ---
+
+
+@router.patch("/memories/{memory_id}")
+async def patch_memory(
+    memory_id: UUID,
+    request: Request,
+    owner_id: UUID = Depends(get_owner_id),  # noqa: B008
+) -> dict:
+    """Merge metadata into an existing memory. Top-level keys are overwritten."""
+    body = await request.json()
+    metadata = body.get("metadata")
+    source_type = body.get("source_type")
+
+    if not metadata and not source_type:
+        raise EngramError("INVALID_INPUT", "Nothing to update", 400)
+
+    db = request.app.state.db
+    async with tenant_connection(db, owner_id) as conn:
+        updated = await memory_repo.upsert_metadata(
+            conn, memory_id, owner_id,
+            metadata or {},
+            source_type=source_type,
+        )
+
+    if not updated:
+        raise EngramError("NOT_FOUND", "Memory not found", 404)
+
+    return {"data": {"id": str(memory_id), "updated": True}}
+
+
+@router.patch("/memories/by-meta/{meta_key}/{meta_value}")
+async def patch_memory_by_meta(
+    meta_key: str,
+    meta_value: str,
+    request: Request,
+    owner_id: UUID = Depends(get_owner_id),  # noqa: B008
+) -> dict:
+    """Find memory by metadata key/value, then merge metadata updates.
+
+    Used by Enmotiv to sync trust_level and enrichment by enmotiv_id
+    without needing to track Engram's internal UUIDs.
+    """
+    body = await request.json()
+    metadata = body.get("metadata")
+    source_type = body.get("source_type")
+
+    if not metadata and not source_type:
+        raise EngramError("INVALID_INPUT", "Nothing to update", 400)
+
+    if meta_key not in ("enmotiv_id", "enmotiv_type"):
+        raise EngramError(
+            "INVALID_INPUT",
+            f"Lookup by metadata.{meta_key} not supported",
+            400,
+        )
+
+    db = request.app.state.db
+    async with tenant_connection(db, owner_id) as conn:
+        memory_id = await memory_repo.find_by_metadata_value(
+            conn, owner_id, meta_key, meta_value
+        )
+        if not memory_id:
+            raise EngramError("NOT_FOUND", f"No memory with {meta_key}={meta_value}", 404)
+
+        await memory_repo.upsert_metadata(
+            conn, memory_id, owner_id,
+            metadata or {},
+            source_type=source_type,
+        )
+
+    return {"data": {"id": str(memory_id), "updated": True}}
+
+
 # --- DELETE /v1/memories/:id ---
 
 

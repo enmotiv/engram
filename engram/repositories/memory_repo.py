@@ -78,6 +78,23 @@ async def insert_memory(
     )
 
 
+async def find_by_metadata_value(
+    conn: asyncpg.Connection,
+    owner_id: UUID,
+    meta_key: str,
+    meta_value: str,
+) -> UUID | None:
+    """Return the ID of a memory matching a metadata key/value, or None."""
+    return await conn.fetchval(
+        "SELECT id FROM memory_nodes "
+        "WHERE owner_id = $1 AND metadata->>$2 = $3 AND is_deleted = FALSE "
+        "LIMIT 1",
+        owner_id,
+        meta_key,
+        meta_value,
+    )
+
+
 async def find_by_content_hash(
     conn: asyncpg.Connection,
     owner_id: UUID,
