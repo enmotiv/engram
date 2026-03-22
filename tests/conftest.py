@@ -36,6 +36,7 @@ def enable_flag(monkeypatch):
             "engram.services.reconsolidation",
             "engram.services.dreamer",
             "engram.repositories.memory_repo",
+            "engram.repositories.edge_repo",
         ]:
             import sys
             mod = sys.modules.get(mod_path)
@@ -55,6 +56,7 @@ def disable_flag(monkeypatch):
             "engram.services.reconsolidation",
             "engram.services.dreamer",
             "engram.repositories.memory_repo",
+            "engram.repositories.edge_repo",
         ]:
             import sys
             mod = sys.modules.get(mod_path)

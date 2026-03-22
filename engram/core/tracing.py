@@ -140,10 +140,11 @@ class TraceCollector:
             "exclude_tags": [],
         }
         self.attractor: dict | None = None
+        self.stdp: dict | None = None
 
     def finish(self) -> dict:
         """Build the trace response object."""
-        return {
+        result = {
             "correlation_id": _correlation_id.get(""),
             "total_ms": round(
                 (time.perf_counter() - self._start) * 1000, 1
@@ -158,6 +159,9 @@ class TraceCollector:
             "reconsolidation": self.reconsolidation,
             "post_filter": self.post_filter,
         }
+        if self.stdp is not None:
+            result["stdp"] = self.stdp
+        return result
 
 
 # --- Prometheus Metrics ---

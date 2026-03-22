@@ -41,6 +41,7 @@ async def recall(
             time_window_hours=body.time_window_hours,
             source_types=body.source_types,
             settle=body.settle,
+            sequence_mode=body.sequence_mode,
         )
     finally:
         set_trace(None)

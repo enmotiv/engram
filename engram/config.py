@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     engram_flag_forgetting: bool = False           # Phase 2: retrieval-induced forgetting
     engram_flag_attractor: bool = False            # Phase 3: attractor dynamics
     engram_flag_metaplasticity: bool = False       # Phase 4: metaplasticity
+    engram_flag_stdp: bool = False                 # Phase 5: spike-timing-dependent plasticity
 
     @property
     def exclude_tags_set(self) -> set[str]:

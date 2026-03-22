@@ -39,9 +39,17 @@ class RecallRequest(BaseModel):
     settle: bool = Field(
         default=False, description="Enable iterative attractor settling for deeper recall"
     )
+    # Phase 5: STDP sequence mode
+    sequence_mode: bool = Field(
+        default=False, description="Follow directional chains from top seed (requires STDP flag)"
+    )
 
 
 class RecallResponse(BaseModel):
     memories: list[MemoryResponse]
     confidence: ConfidenceLevel
     edges: list[EdgeResponse] = Field(default_factory=list)
+    chain_confidence: float | None = Field(
+        default=None,
+        description="Minimum forward weight in the sequence chain (only set in sequence_mode)",
+    )

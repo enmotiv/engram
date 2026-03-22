@@ -276,7 +276,12 @@ def _attractor_settle(
     for row in edge_rows:
         src = row["source_id"]
         tgt = row["target_id"]
-        w = row["weight"]
+        if settings.engram_flag_stdp:
+            fw = row.get("forward_weight", row["weight"])
+            bw = row.get("backward_weight", row["weight"])
+            w = max(fw, bw)
+        else:
+            w = row["weight"]
         key = (min(src, tgt), max(src, tgt))
         # Keep max weight if multiple edges between same pair
         edge_lookup[key] = max(edge_lookup.get(key, 0.0), w)
@@ -421,7 +426,14 @@ def _apply_edges(
         src: UUID = row["source_id"]
         tgt: UUID = row["target_id"]
         etype: str = row["edge_type"]
-        weight: float = row["weight"]
+
+        if settings.engram_flag_stdp:
+            if src in source_set:
+                weight = row.get("forward_weight", row["weight"])
+            else:
+                weight = row.get("backward_weight", row["weight"])
+        else:
+            weight = row["weight"]
 
         if src in source_set:
             neighbor = tgt
@@ -621,6 +633,54 @@ def _apply_post_filter(
     return filtered
 
 
+async def _follow_sequence_chain(
+    conn: asyncpg.Connection,
+    owner_id: UUID,
+    seed_id: UUID,
+    top_k: int,
+    min_weight: float = 0.3,
+) -> tuple[list[UUID], float]:
+    """Follow strongest forward edges from seed to build an ordered chain.
+
+    Returns (chain_ids, chain_confidence).
+    chain_confidence = minimum forward weight in the chain.
+    """
+    chain: list[UUID] = [seed_id]
+    visited: set[UUID] = {seed_id}
+    chain_confidence = 1.0
+    current = seed_id
+
+    while len(chain) < top_k:
+        edges = await edge_repo.fetch_strongest_forward_edges(
+            conn, owner_id, current, min_weight=min_weight, limit=5
+        )
+        if not edges:
+            break
+
+        # Find best next node that isn't already in the chain
+        found_next = False
+        for edge in edges:
+            if edge["source_id"] == current:
+                next_node = edge["target_id"]
+                eff_weight = edge["forward_weight"]
+            else:
+                next_node = edge["source_id"]
+                eff_weight = edge["backward_weight"]
+
+            if next_node not in visited:
+                chain.append(next_node)
+                visited.add(next_node)
+                chain_confidence = min(chain_confidence, eff_weight)
+                current = next_node
+                found_next = True
+                break
+
+        if not found_next:
+            break
+
+    return chain, chain_confidence if len(chain) > 1 else 0.0
+
+
 async def recall_memories(
     db_pool: asyncpg.Pool,
     owner_id: UUID,
@@ -635,6 +695,7 @@ async def recall_memories(
     time_window_hours: int | None = None,
     source_types: list[SourceType] | None = None,
     settle: bool = False,
+    sequence_mode: bool = False,
 ) -> RecallResponse:
     """Full read path. Returns RecallResponse."""
     with Span(
@@ -789,6 +850,50 @@ async def recall_memories(
         # Trim to top_k
         top = filtered[:top_k]
 
+        # Phase 5: Sequence mode — follow directional chain from top seed
+        chain_confidence_val: float | None = None
+        if (
+            sequence_mode
+            and settings.engram_flag_stdp
+            and top
+        ):
+            async with tenant_connection(db_pool, owner_id) as seq_conn:
+                seed_id = top[0]["id"]
+                chain_ids, chain_confidence_val = await _follow_sequence_chain(
+                    seq_conn, owner_id, seed_id, top_k
+                )
+                if len(chain_ids) > 1:
+                    # Fetch any missing nodes BEFORE building chain_top
+                    missing_ids = [
+                        cid for cid in chain_ids
+                        if cid not in nodes_by_id
+                    ]
+                    if missing_ids:
+                        extra_nodes = await _fetch_nodes(
+                            seq_conn, missing_ids, owner_id=owner_id
+                        )
+                        nodes_by_id.update(extra_nodes)
+
+                    # Rebuild top from chain, preserving scored data
+                    chain_lookup = {item["id"]: item for item in top}
+                    chain_top = []
+                    for cid in chain_ids:
+                        if cid in chain_lookup:
+                            chain_top.append(chain_lookup[cid])
+                        elif cid in nodes_by_id:
+                            # Chain discovered a node not in original top
+                            cand = candidates.get(cid, {})
+                            chain_top.append({
+                                "id": cid,
+                                "convergence_score": 0.0,
+                                "dims_matched": len(cand.get("scores", {})),
+                                "dimension_scores": cand.get("scores", {}),
+                                "matched_axes": cand.get("matched_axes", []),
+                                "final_score": activation_map.get(cid, 0.0),
+                            })
+                    if chain_top:
+                        top = chain_top
+
         # Build response
         memories = []
         for item in top:
@@ -854,5 +959,8 @@ async def recall_memories(
                     )
 
     return RecallResponse(
-        memories=memories, confidence=confidence, edges=edges
+        memories=memories,
+        confidence=confidence,
+        edges=edges,
+        chain_confidence=chain_confidence_val,
     )
