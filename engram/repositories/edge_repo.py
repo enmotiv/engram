@@ -223,7 +223,8 @@ async def fetch_edge_ids_for_pairs(
         "JOIN (SELECT * FROM unnest($2::uuid[], $3::uuid[], $4::text[]) "
         "  AS t(src, tgt, ax)) p "
         "  ON e.source_id = p.src AND e.target_id = p.tgt AND e.axis = p.ax "
-        "WHERE e.owner_id = $1",
+        "WHERE e.owner_id = $1 "
+        "  AND e.edge_type IN ('excitatory', 'associative')",
         owner_id,
         sources,
         targets,
@@ -251,6 +252,7 @@ async def fetch_strongest_forward_edges(
         "FROM edges "
         "WHERE owner_id = $1 "
         "  AND (source_id = $2 OR target_id = $2) "
+        "  AND edge_type IN ('excitatory', 'associative') "
         "  AND CASE WHEN source_id = $2 THEN forward_weight "
         "           ELSE backward_weight END >= $3 "
         "ORDER BY effective_forward DESC "
