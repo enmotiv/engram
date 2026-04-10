@@ -51,7 +51,11 @@ async def provision_owner(
     async with db.acquire() as conn:
         await create_owner(conn, owner_id=body.owner_id, label=body.label)
         raw_key, key_id = await create_api_key(
-            conn, owner_id=body.owner_id, label=body.label,
+            conn,
+            owner_id=body.owner_id,
+            label=body.label,
+            rate_limit_reads=settings.engram_default_rate_limit_reads,
+            rate_limit_writes=settings.engram_default_rate_limit_writes,
         )
 
     return {
@@ -69,8 +73,10 @@ async def provision_owner(
 class CreateKeyRequest(BaseModel):
     owner_id: UUID
     label: str = ""
-    rate_limit_reads: int = Field(default=100, ge=1)
-    rate_limit_writes: int = Field(default=50, ge=1)
+    # Defaults are None — resolved from settings at request time so
+    # env var changes take effect without restarting the key creation path.
+    rate_limit_reads: int | None = Field(default=None, ge=1)
+    rate_limit_writes: int | None = Field(default=None, ge=1)
 
 
 @router.post("/keys", status_code=201)
@@ -84,14 +90,18 @@ async def create_api_key(
 
     from engram.repositories.owner_repo import create_api_key
 
+    # Resolve rate limit defaults from settings if not explicitly provided
+    reads = body.rate_limit_reads or settings.engram_default_rate_limit_reads
+    writes = body.rate_limit_writes or settings.engram_default_rate_limit_writes
+
     db = request.app.state.db
     async with db.acquire() as conn:
         raw_key, key_id = await create_api_key(
             conn,
             owner_id=body.owner_id,
             label=body.label,
-            rate_limit_reads=body.rate_limit_reads,
-            rate_limit_writes=body.rate_limit_writes,
+            rate_limit_reads=reads,
+            rate_limit_writes=writes,
         )
 
     return {

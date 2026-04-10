@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     engram_retrieval_exclude_tags: str = ""
     engram_admin_secret: str = ""
 
+    # Rate limit defaults for newly-provisioned API keys.
+    # Sliding window is 60 seconds; these are requests-per-minute.
+    # Service-to-service workloads (sweeps, backfills) can easily
+    # exceed the old defaults (50 writes / 100 reads) under burst load.
+    engram_default_rate_limit_writes: int = 300
+    engram_default_rate_limit_reads: int = 600
+
     # Feature flags — all off by default. Enable per-mechanism via env vars.
     engram_flag_context_retrieval: bool = False    # Phase 1: context-scaffolded retrieval
     engram_flag_forgetting: bool = False           # Phase 2: retrieval-induced forgetting
