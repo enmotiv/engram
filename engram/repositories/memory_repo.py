@@ -34,6 +34,7 @@ async def insert_memory(
     salience: float,
     vectors: dict[str, list[float]],
     metadata: dict | None = None,
+    metadata_type: str | None = None,
     activation_level: float | None = None,
 ) -> None:
     """Insert a new memory node with all 6 vectors."""
@@ -49,14 +50,14 @@ async def insert_memory(
             salience, activation_level, access_count,
             vec_temporal, vec_emotional, vec_semantic,
             vec_sensory, vec_action, vec_procedural,
-            metadata, dreamer_processed
+            metadata, metadata_type, dreamer_processed
         ) VALUES (
             $1, $2, $3, $4, $5,
             $6, $7, $8,
             $9, $10, 0,
             $11, $12, $13,
             $14, $15, $16,
-            $17, FALSE
+            $17, $18, FALSE
         )""",
         node_id,
         owner_id,
@@ -75,6 +76,7 @@ async def insert_memory(
         vectors["action"],
         vectors["procedural"],
         json.dumps(metadata) if metadata else "{}",
+        metadata_type,
     )
 
 
@@ -115,34 +117,34 @@ async def upsert_metadata(
     owner_id: UUID,
     metadata: dict,
     source_type: str | None = None,
+    metadata_type: str | None = None,
 ) -> bool:
     """Merge new metadata into an existing memory's JSONB metadata.
 
     Uses jsonb || jsonb to merge top-level keys. New keys are added,
     existing keys are overwritten. Returns True if a row was updated.
     """
+    # Build SET clause dynamically based on provided fields
+    set_parts = ["metadata = metadata || $3::jsonb", "last_accessed = NOW()"]
+    params: list = [memory_id, owner_id, json.dumps(metadata)]
+    idx = 4
+
     if source_type:
-        result = await conn.execute(
-            "UPDATE memory_nodes "
-            "SET metadata = metadata || $3::jsonb, "
-            "    source_type = $4, "
-            "    last_accessed = NOW() "
-            "WHERE id = $1 AND owner_id = $2 AND is_deleted = FALSE",
-            memory_id,
-            owner_id,
-            json.dumps(metadata),
-            source_type,
-        )
-    else:
-        result = await conn.execute(
-            "UPDATE memory_nodes "
-            "SET metadata = metadata || $3::jsonb, "
-            "    last_accessed = NOW() "
-            "WHERE id = $1 AND owner_id = $2 AND is_deleted = FALSE",
-            memory_id,
-            owner_id,
-            json.dumps(metadata),
-        )
+        set_parts.append(f"source_type = ${idx}")
+        params.append(source_type)
+        idx += 1
+
+    if metadata_type is not None:
+        set_parts.append(f"metadata_type = ${idx}")
+        params.append(metadata_type)
+        idx += 1
+
+    result = await conn.execute(
+        f"UPDATE memory_nodes "  # noqa: S608
+        f"SET {', '.join(set_parts)} "
+        f"WHERE id = $1 AND owner_id = $2 AND is_deleted = FALSE",
+        *params,
+    )
     return _parse_count(result) > 0
 
 
@@ -189,6 +191,7 @@ async def find_by_vector_similarity_filtered(
     session_id: UUID | None = None,
     time_window_hours: int | None = None,
     source_types: list[str] | None = None,
+    metadata_type: str | None = None,
 ) -> list[asyncpg.Record]:
     """Find memories by vector similarity with optional context filters."""
     col = f"vec_{axis}"
@@ -212,6 +215,11 @@ async def find_by_vector_similarity_filtered(
     if source_types:
         conditions.append(f"source_type = ANY(${idx})")
         params.append(source_types)
+        idx += 1
+
+    if metadata_type is not None:
+        conditions.append(f"metadata_type = ${idx}")
+        params.append(metadata_type)
         idx += 1
 
     params.append(limit)
@@ -277,7 +285,7 @@ async def fetch_full_nodes(
             "SELECT id, owner_id, content, content_hash, created_at, "
             "last_accessed, access_count, activation_level, salience, "
             "source_type, session_id, embedding_model, embedding_dimensions, "
-            "metadata, is_deleted, dreamer_processed "
+            "metadata, metadata_type, is_deleted, dreamer_processed "
             "FROM memory_nodes WHERE owner_id = $1 AND id = ANY($2)",
             owner_id, node_ids,
         )
@@ -568,7 +576,7 @@ async def fetch_single_memory(
     return await conn.fetchrow(
         "SELECT id, content, content_hash, created_at, last_accessed, "
         "access_count, activation_level, salience, source_type, "
-        "session_id, metadata "
+        "session_id, metadata, metadata_type "
         "FROM memory_nodes "
         "WHERE id = $1 AND owner_id = $2 AND is_deleted = FALSE",
         memory_id,
@@ -585,6 +593,7 @@ async def list_memories_paginated(
     cursor_dt=None,
     cursor_direction: str = "before",
     source_types: list[str] | None = None,
+    metadata_type: str | None = None,
 ) -> list[asyncpg.Record]:
     """List memories with cursor pagination and optional filters."""
     conditions = ["owner_id = $1", "is_deleted = FALSE"]
@@ -604,13 +613,18 @@ async def list_memories_paginated(
         params.append(source_types)
         idx += 1
 
+    if metadata_type is not None:
+        conditions.append(f"metadata_type = ${idx}")
+        params.append(metadata_type)
+        idx += 1
+
     params.append(limit)
 
     where = " AND ".join(conditions)
     return await conn.fetch(
         f"SELECT id, content, content_hash, created_at, last_accessed, "  # noqa: S608
         f"access_count, activation_level, salience, source_type, "
-        f"session_id, metadata "
+        f"session_id, metadata, metadata_type "
         f"FROM memory_nodes "
         f"WHERE {where} "
         f"ORDER BY {order_sql} "

@@ -48,6 +48,7 @@ async def create_memory(
             source_type=body.source_type,
             session_id=body.session_id,
             metadata=body.metadata,
+            metadata_type=body.metadata_type,
             upsert=upsert,
             initial_activation=body.initial_activation,
         )
@@ -99,6 +100,7 @@ async def list_memories(
     limit: int = Query(default=20, ge=1, le=100),
     cursor: str | None = Query(default=None),
     source_type: str | None = Query(default=None),
+    metadata_type: str | None = Query(default=None, max_length=50),
     sort: str = Query(default="created_at:desc"),
 ) -> dict:
     if sort not in _VALID_SORTS:
@@ -140,6 +142,7 @@ async def list_memories(
             cursor_dt=cursor_dt,
             cursor_direction=cursor_direction,
             source_types=source_types,
+            metadata_type=metadata_type,
         )
 
     has_more = len(rows) > limit
@@ -264,6 +267,7 @@ def _row_to_dict(row) -> dict:  # noqa: ANN001
         "source_type": row["source_type"],
         "session_id": str(row["session_id"]) if row["session_id"] else None,
         "metadata": meta,
+        "metadata_type": row.get("metadata_type"),
         "created_at": row["created_at"].isoformat(),
         "last_accessed": row["last_accessed"].isoformat(),
         "access_count": row["access_count"],

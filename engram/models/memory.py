@@ -41,6 +41,11 @@ class CreateMemoryRequest(BaseModel):
     source_type: SourceType
     session_id: UUID | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata_type: str | None = Field(
+        default=None, max_length=50,
+        description="Extension type discriminator for type-filtered recall. "
+        "Engram indexes this for fast filtering but does not interpret the value.",
+    )
     initial_activation: float | None = Field(
         default=None, ge=0.0, le=1.0,
         description="Optional activation hint. If omitted, derived from source_type.",
@@ -67,6 +72,7 @@ class MemoryNode(BaseModel):
     embedding_model: str = Field(..., max_length=100)
     embedding_dimensions: int
     metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata_type: str | None = None
     is_deleted: bool = False
     dreamer_processed: bool = False
 
@@ -86,6 +92,7 @@ class MemoryNode(BaseModel):
             dimension_scores=dimension_scores,
             matched_axes=matched_axes,
             metadata=self.metadata,
+            metadata_type=self.metadata_type,
             salience=self.salience,
             created_at=self.created_at,
             last_accessed=self.last_accessed,
@@ -116,6 +123,7 @@ class MemoryResponse(BaseModel):
     dimension_scores: DimensionScores
     matched_axes: list[str]
     metadata: dict[str, Any]
+    metadata_type: str | None = None
     salience: float
     created_at: datetime
     last_accessed: datetime

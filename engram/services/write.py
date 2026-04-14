@@ -38,6 +38,7 @@ async def encode_memory(
     source_type: SourceType,
     session_id: UUID | None = None,
     metadata: dict | None = None,
+    metadata_type: str | None = None,
     upsert: bool = False,
     initial_activation: float | None = None,
 ) -> dict:
@@ -76,6 +77,7 @@ async def encode_memory(
                             owner_id,
                             metadata,
                             source_type=source_type.value,
+                            metadata_type=metadata_type,
                         )
                 logger.info(
                     "memory.upserted",
@@ -117,6 +119,7 @@ async def encode_memory(
                         salience=salience,
                         vectors=vectors,
                         metadata=metadata,
+                        metadata_type=metadata_type,
                         activation_level=initial_activation,
                     )
                 except asyncpg.UniqueViolationError:
@@ -131,6 +134,7 @@ async def encode_memory(
                             owner_id,
                             metadata,
                             source_type=source_type.value,
+                            metadata_type=metadata_type,
                         )
                         return {
                             "id": str(race_existing),

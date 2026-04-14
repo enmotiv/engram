@@ -52,12 +52,23 @@ async def _search_axis(
     session_id: UUID | None = None,
     time_window_hours: int | None = None,
     source_types: list[str] | None = None,
+    metadata_type: str | None = None,
 ) -> tuple[str, list[tuple[UUID, float]]]:
     """Search one vector column on its own connection. Returns (axis, results)."""
     async with tenant_connection(db_pool, owner_id) as conn:
+        # metadata_type always triggers filtered search — it's a type
+        # discriminator, not a context flag. Other filters are gated
+        # behind engram_flag_context_retrieval.
         use_filtered = (
-            settings.engram_flag_context_retrieval
-            and (session_id is not None or time_window_hours is not None or source_types is not None)
+            metadata_type is not None
+            or (
+                settings.engram_flag_context_retrieval
+                and (
+                    session_id is not None
+                    or time_window_hours is not None
+                    or source_types is not None
+                )
+            )
         )
         if use_filtered:
             rows = await memory_repo.find_by_vector_similarity_filtered(
@@ -65,6 +76,7 @@ async def _search_axis(
                 session_id=session_id,
                 time_window_hours=time_window_hours,
                 source_types=source_types,
+                metadata_type=metadata_type,
             )
         else:
             rows = await memory_repo.find_by_vector_similarity(
@@ -82,6 +94,7 @@ async def _multi_axis_search(
     session_id: UUID | None = None,
     time_window_hours: int | None = None,
     source_types: list[str] | None = None,
+    metadata_type: str | None = None,
 ) -> dict[UUID, dict]:
     """Run 6 parallel searches (one connection per axis).
 
@@ -101,6 +114,7 @@ async def _multi_axis_search(
                 session_id=session_id,
                 time_window_hours=time_window_hours,
                 source_types=source_types,
+                metadata_type=metadata_type,
             )
             for axis in AXES
         ]
@@ -575,6 +589,7 @@ async def _fetch_nodes(
             embedding_model=row["embedding_model"],
             embedding_dimensions=row["embedding_dimensions"],
             metadata=meta,
+            metadata_type=row.get("metadata_type"),
             is_deleted=row["is_deleted"],
             dreamer_processed=row["dreamer_processed"],
         )
@@ -718,11 +733,14 @@ async def recall_memories(
         )
 
         # Phase B1: parallel multi-axis search (6 connections)
+        # metadata_type is applied as a pre-filter (WHERE clause before HNSW)
+        # rather than only as a post-filter, so candidates are pruned early.
         candidates = await _multi_axis_search(
             db_pool, cue_vectors, owner_id,
             session_id=session_id,
             time_window_hours=time_window_hours,
             source_types=source_type_strs,
+            metadata_type=metadata_type,
         )
 
         if not candidates:
@@ -836,8 +854,18 @@ async def recall_memories(
 
         ranked.sort(key=lambda x: x["final_score"], reverse=True)
 
-        # Post-filter
-        filtered = _apply_post_filter(ranked, nodes_by_id, include_type=metadata_type)
+        # Post-filter — skip JSONB type filter when column pre-filter was active,
+        # because metadata_type (column) is the authoritative discriminator.
+        # Only fall back to JSONB metadata.type when the column pre-filter
+        # couldn't run (e.g., flag disabled or metadata_type not in DB yet).
+        _pre_filtered = (
+            metadata_type is not None
+            and settings.engram_flag_context_retrieval
+        )
+        filtered = _apply_post_filter(
+            ranked, nodes_by_id,
+            include_type=None if _pre_filtered else metadata_type,
+        )
 
         # Min convergence filter
         if min_convergence > 0.0:
