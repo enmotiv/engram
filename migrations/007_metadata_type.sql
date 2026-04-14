@@ -24,6 +24,8 @@ ALTER TABLE memory_nodes
 -- Partial B-tree index: only typed memories are indexed.
 -- Composes with HNSW for filtered vector search:
 --   partition prune (owner_id) → B-tree filter (metadata_type) → HNSW scan
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_nodes_metadata_type
+-- Note: not using CONCURRENTLY — migration runner executes within a
+-- transaction block. Safe at current scale; table has no typed rows yet.
+CREATE INDEX IF NOT EXISTS idx_nodes_metadata_type
   ON memory_nodes (metadata_type)
   WHERE metadata_type IS NOT NULL AND is_deleted = FALSE;
